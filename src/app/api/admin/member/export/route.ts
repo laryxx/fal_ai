@@ -31,7 +31,18 @@ export async function POST(request: Request) {
 
   const data = await convexGetMemberFullLog(user._id, parsed.data.memberId);
 
-  const rows = data.creatives.map((c) => ({
+  const rows = data.creatives.map((c: {
+    createdAt: number;
+    kind: string;
+    modelLabel: string;
+    prompt: string;
+    aspectRatio: string;
+    durationSeconds: number | null;
+    status: string;
+    actualCostUsdCents: number;
+    billableUnits: number;
+    billingUnit: string;
+  }) => ({
     Date: new Date(c.createdAt).toLocaleString("en-US"),
     Kind: c.kind,
     Model: c.modelLabel,
