@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export type MediaKind = "image" | "video";
 export type ImageModelId = "nano-banana" | "nano-banana-pro" | "seedream-v4";
-export type VideoModelId = "sora-2" | "ltx-2.3-fast";
+export type VideoModelId = "sora-2" | "ltx-2.3-fast" | "veo-3";
 export type AspectRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
 
 export const imageModelOptions = [
@@ -39,11 +39,17 @@ export const videoModelOptions = [
     description: "Fast open-source video generation with 1080p support.",
     priceLabel: "$0.04 / second",
   },
+  {
+    id: "veo-3",
+    label: "Veo 3",
+    description: "Google video generation with native audio.",
+    priceLabel: "$0.40 / second",
+  },
 ] as const;
 
 export const imageGenerationSchema = z.object({
   kind: z.literal("image"),
-  prompt: z.string().trim().min(8).max(2000),
+  prompt: z.string().trim().min(8).max(10000),
   modelId: z.enum(["nano-banana", "nano-banana-pro", "seedream-v4"]),
   aspectRatio: z.enum(["1:1", "4:3", "3:4", "16:9", "9:16"]),
   count: z.coerce.number().int().min(1).max(4),
@@ -51,10 +57,11 @@ export const imageGenerationSchema = z.object({
 
 export const videoGenerationSchema = z.object({
   kind: z.literal("video"),
-  prompt: z.string().trim().min(8).max(2000),
-  modelId: z.enum(["sora-2", "ltx-2.3-fast"]),
+  prompt: z.string().trim().min(8).max(10000),
+  modelId: z.enum(["sora-2", "ltx-2.3-fast", "veo-3"]),
   aspectRatio: z.enum(["16:9", "9:16"]),
-  duration: z.coerce.number().int().refine((value) => [4, 8].includes(value)),
+  quality: z.enum(["720p", "1080p"]),
+  duration: z.coerce.number().int().refine((value) => [4, 6, 8, 10, 15].includes(value)),
   count: z.coerce.number().int().min(1).max(3),
 });
 
@@ -62,6 +69,18 @@ export function getAspectRatioOptions(kind: MediaKind) {
   return kind === "image"
     ? ["1:1", "9:16", "16:9", "3:4", "4:3"]
     : ["16:9", "9:16"];
+}
+
+export function getVideoQualityOptions(modelId: string): string[] {
+  if (modelId === "sora-2") return ["720p", "1080p"];
+  if (modelId === "ltx-2.3-fast") return ["1080p"];
+  return ["720p"]; // veo-3
+}
+
+export function getVideoDurationOptions(modelId: string): string[] {
+  if (modelId === "sora-2") return ["4", "8", "10", "15"];
+  if (modelId === "veo-3") return ["4", "6", "8"];
+  return ["4", "8"]; // ltx-2.3-fast
 }
 
 function getSeedreamImageSize(aspectRatio: AspectRatio) {
@@ -182,6 +201,7 @@ export function prepareVideoRequest(args: {
   modelId: VideoModelId;
   prompt: string;
   aspectRatio: "16:9" | "9:16";
+  quality: "720p" | "1080p";
   duration: number;
   referenceUrls: string[];
 }) {
@@ -202,14 +222,14 @@ export function prepareVideoRequest(args: {
       estimatedCostUsdCents: args.duration * 10,
       billingUnit: "second",
       billableUnits: args.duration,
-      resolution: "720p",
+      resolution: args.quality,
       input: hasReferences
         ? {
             prompt: args.prompt,
             image_url: primaryReference,
             aspect_ratio: args.aspectRatio,
             duration: args.duration,
-            resolution: "720p",
+            resolution: args.quality,
             delete_video: true,
             model: "sora-2",
           }
@@ -217,10 +237,31 @@ export function prepareVideoRequest(args: {
             prompt: args.prompt,
             aspect_ratio: args.aspectRatio,
             duration: args.duration,
-            resolution: "720p",
+            resolution: args.quality,
             delete_video: true,
             model: "sora-2",
           },
+    };
+  }
+
+  if (args.modelId === "veo-3") {
+    if (![4, 6, 8].includes(args.duration)) {
+      throw new Error("Veo 3 is configured for 4s, 6s, or 8s clips here");
+    }
+
+    return {
+      endpointId: "fal-ai/veo3",
+      modelLabel: "Veo 3",
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: args.duration * 40,
+      billingUnit: "second",
+      billableUnits: args.duration,
+      resolution: "720p",
+      input: {
+        prompt: args.prompt,
+        duration: `${args.duration}s`,
+        aspect_ratio: args.aspectRatio,
+      },
     };
   }
 

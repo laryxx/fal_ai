@@ -26,6 +26,8 @@ import {
 } from "@/lib/format";
 import {
   getAspectRatioOptions,
+  getVideoDurationOptions,
+  getVideoQualityOptions,
   imageModelOptions,
   videoModelOptions,
 } from "@/lib/models";
@@ -47,6 +49,7 @@ function buildGenerationFormData(args: {
   aspectRatio: string;
   count: string;
   duration?: string;
+  quality?: string;
   references?: UploadPreview[];
 }) {
   const formData = new FormData();
@@ -58,6 +61,10 @@ function buildGenerationFormData(args: {
 
   if (args.kind === "video" && args.duration) {
     formData.set("duration", args.duration);
+  }
+
+  if (args.kind === "video" && args.quality) {
+    formData.set("quality", args.quality);
   }
 
   for (const item of args.references ?? []) {
@@ -128,6 +135,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [imageCount, setImageCount] = useState("1");
   const [videoCount, setVideoCount] = useState("1");
   const [videoDuration, setVideoDuration] = useState("8");
+  const [videoQuality, setVideoQuality] = useState("720p");
   const [inviteEmail, setInviteEmail] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -147,6 +155,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     aspectRatio: string;
     count: string;
     duration?: string;
+    quality?: string;
     references?: UploadPreview[];
     onSuccess?: () => void;
   }) {
@@ -277,6 +286,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       aspectRatio: videoAspectRatio,
       count: videoCount,
       duration: videoDuration,
+      quality: videoQuality,
       references: videoReferences,
       onSuccess: () => {
         setVideoPrompt("");
@@ -317,6 +327,8 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     }
 
     const duration = String(creative.durationSeconds ?? 8);
+    const qualityOptions = getVideoQualityOptions(modelId);
+    const quality = qualityOptions.includes(creative.resolution ?? "") ? creative.resolution! : qualityOptions[0];
 
     setTab("video");
     setVideoPrompt(creative.prompt);
@@ -324,6 +336,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     setVideoAspectRatio(aspectRatio);
     setVideoCount("1");
     setVideoDuration(duration);
+    setVideoQuality(quality);
     setVideoReferences([]);
 
     await submitGeneration({
@@ -333,6 +346,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       aspectRatio,
       count: "1",
       duration,
+      quality,
     });
   }
 
@@ -536,14 +550,22 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                 value={tab === "image" ? imagePrompt : videoPrompt}
               />
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className={`grid gap-3 sm:grid-cols-2 ${tab === "video" ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
                 <SelectField
                   label="Model"
                   options={tab === "image" ? imageModelOptions : videoModelOptions}
                   value={tab === "image" ? imageModelId : videoModelId}
-                  onChange={(value) =>
-                    tab === "image" ? setImageModelId(value) : setVideoModelId(value)
-                  }
+                  onChange={(value) => {
+                    if (tab === "image") {
+                      setImageModelId(value);
+                    } else {
+                      setVideoModelId(value);
+                      const qualityOpts = getVideoQualityOptions(value);
+                      if (!qualityOpts.includes(videoQuality)) setVideoQuality(qualityOpts[0]);
+                      const durationOpts = getVideoDurationOptions(value);
+                      if (!durationOpts.includes(videoDuration)) setVideoDuration(durationOpts[0]);
+                    }
+                  }}
                 />
                 <SelectField
                   label="Ratio"
@@ -555,6 +577,14 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                       : setVideoAspectRatio(value)
                   }
                 />
+                {tab === "video" ? (
+                  <SelectField
+                    label="Quality"
+                    options={getVideoQualityOptions(videoModelId)}
+                    value={videoQuality}
+                    onChange={setVideoQuality}
+                  />
+                ) : null}
                 <SelectField
                   label="Count"
                   options={tab === "image" ? ["1", "2", "3", "4"] : ["1", "2", "3"]}
@@ -566,7 +596,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                 {tab === "video" ? (
                   <SelectField
                     label="Duration"
-                    options={["4", "8"]}
+                    options={getVideoDurationOptions(videoModelId)}
                     value={videoDuration}
                     onChange={setVideoDuration}
                     renderLabel={(value) => `${value}s`}

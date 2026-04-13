@@ -50,6 +50,7 @@ export async function POST(request: Request) {
           prompt: asString(formData.get("prompt")),
           modelId: asString(formData.get("modelId")),
           aspectRatio: asString(formData.get("aspectRatio")),
+          quality: asString(formData.get("quality")),
           duration: asString(formData.get("duration")),
           count: asString(formData.get("count")),
         })
@@ -108,6 +109,7 @@ export async function POST(request: Request) {
               modelId: parsed.data.modelId,
               prompt: parsed.data.prompt,
               aspectRatio: parsed.data.aspectRatio,
+              quality: parsed.data.quality,
               duration: parsed.data.duration,
               referenceUrls,
             })
@@ -149,7 +151,9 @@ export async function POST(request: Request) {
           parsed.data.kind === "video"
             ? parsed.data.modelId === "sora-2"
               ? "Sora 2"
-              : "LTX 2.3 Fast"
+              : parsed.data.modelId === "veo-3"
+                ? "Veo 3"
+                : "LTX 2.3 Fast"
             : parsed.data.modelId === "nano-banana"
               ? "Nano Banana"
               : parsed.data.modelId === "nano-banana-pro"

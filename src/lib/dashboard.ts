@@ -1,5 +1,6 @@
+import { redirect } from "next/navigation";
 import type { AppSession } from "@/lib/auth/session";
-import { clearSessionCookie } from "@/lib/auth/session";
+
 import { getBaseEnvSafe, getServerEnvSafe } from "@/lib/env";
 import {
   convexGetBootstrapState,
@@ -50,14 +51,7 @@ export async function loadAppData(session: AppSession | null): Promise<AppData> 
 
   const currentUser = await convexGetUserById(session.userId);
   if (!currentUser) {
-    await clearSessionCookie();
-    return {
-      configurationError,
-      bootstrapRequired: bootstrapState.bootstrapRequired,
-      authenticated: false,
-      snapshot: null,
-      team: null,
-    };
+    redirect("/api/auth/sign-out");
   }
 
   const snapshot = await convexGetDashboardSnapshot(currentUser._id);
