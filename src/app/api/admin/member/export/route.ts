@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     "Aspect Ratio": c.aspectRatio,
     "Duration (s)": c.durationSeconds ?? "",
     Status: c.status,
-    "Cost (USD)": (c.actualCostUsdCents / 100).toFixed(4).replace(".", ","),
+    "Cost (USD)": c.actualCostUsdCents / 100,
     "Billable Units": c.billableUnits,
     "Billing Unit": c.billingUnit,
   }));
