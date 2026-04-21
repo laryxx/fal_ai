@@ -283,8 +283,7 @@ export const listTeamFiltered = query({
       const existing = userStats.get(key) ?? { spendUsdCents: 0, creativeCount: 0 };
       userStats.set(key, {
         spendUsdCents:
-          existing.spendUsdCents +
-          (creative.actualCostUsdCents ?? creative.estimatedCostUsdCents),
+          existing.spendUsdCents + (creative.actualCostUsdCents ?? 0),
         creativeCount: existing.creativeCount + 1,
       });
     }
