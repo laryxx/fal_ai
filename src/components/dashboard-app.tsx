@@ -167,7 +167,18 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         method: "POST",
         body: buildGenerationFormData(args),
       });
-      const payload = await response.json();
+
+      let payload: { error?: string; ok?: boolean } = {};
+      try {
+        payload = await response.json();
+      } catch {
+        setMessage(
+          response.status === 413
+            ? "Reference image is too large. Please use a smaller file (under 4 MB)."
+            : "Could not submit the generation request",
+        );
+        return;
+      }
 
       if (!response.ok) {
         setMessage(payload.error ?? "Could not submit the generation request");
@@ -624,6 +635,11 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                 maxFiles={tab === "image" ? 4 : 1}
                 previews={tab === "image" ? imageReferences : videoReferences}
                 onAdd={(files) => {
+                  const oversized = files.filter((f) => f.size > 4 * 1024 * 1024);
+                  if (oversized.length > 0) {
+                    setMessage("Reference image is too large. Please use a file under 4 MB.");
+                    return;
+                  }
                   const current = tab === "image" ? imageReferences : videoReferences;
                   const setter = tab === "image" ? setImageReferences : setVideoReferences;
                   const max = tab === "image" ? 4 : 1;
