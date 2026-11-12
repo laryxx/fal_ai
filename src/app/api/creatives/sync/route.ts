@@ -9,6 +9,11 @@ import {
 } from "@/lib/convex";
 import { getFalResult, getFalStatus } from "@/lib/fal";
 import { uploadToR2 } from "@/lib/r2";
+import {
+  applyVmakeResult,
+  callVmakeService,
+  VMAKE_STALE_AFTER_MS,
+} from "@/lib/vmake";
 
 type FalMediaFile = {
   url: string;
@@ -36,7 +41,51 @@ function getOutputFile(result: FalResultShape, kind: "image" | "video") {
   return result.data?.images?.[0] ?? null;
 }
 
-export async function POST() {
+async function syncVmakeCreative(
+  origin: string,
+  creative: {
+    _id: string;
+    userId: string;
+    createdAt: number;
+    estimatedCostUsdCents: number;
+    providerTaskId?: string;
+  },
+) {
+  const stale = Date.now() - creative.createdAt > VMAKE_STALE_AFTER_MS;
+
+  // Without a task id the enhance route is still waiting on Vmake (it usually
+  // finishes within seconds). Only step in if that request evidently died.
+  if (!creative.providerTaskId) {
+    if (stale) {
+      await convexMarkCreativeFailed(creative._id, "Vmake enhancement timed out");
+    }
+    return false;
+  }
+
+  try {
+    const result = await callVmakeService(origin, {
+      action: "status",
+      taskId: creative.providerTaskId,
+    });
+    if (result.status === "processing" && stale) {
+      await convexMarkCreativeFailed(creative._id, "Vmake enhancement timed out");
+      return false;
+    }
+    await applyVmakeResult(creative, result);
+    return result.status === "completed";
+  } catch (error) {
+    // Network hiccups: try again on the next sync unless the job is too old.
+    if (stale) {
+      await convexMarkCreativeFailed(
+        creative._id,
+        error instanceof Error ? error.message : "Vmake enhancement failed",
+      );
+    }
+    return false;
+  }
+}
+
+export async function POST(request: Request) {
   if (!getServerEnvSafe().ok) {
     return NextResponse.json(
       { error: "Configure the environment before syncing creatives" },
@@ -52,7 +101,16 @@ export async function POST() {
   const candidates = await convexListSyncCandidates(session.userId);
   let processed = 0;
 
+  const origin = new URL(request.url).origin;
+
   for (const creative of candidates) {
+    if (creative.provider === "vmake") {
+      if (await syncVmakeCreative(origin, creative)) {
+        processed += 1;
+      }
+      continue;
+    }
+
     if (!creative.falRequestId || !creative.endpointId) {
       continue;
     }

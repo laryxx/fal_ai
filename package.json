@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "convex:dev": "convex dev",
-    "convex:codegen": "convex codegen"
+    "convex:codegen": "convex codegen",
+    "vmake:dev": "python api/vmake.py"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1018.0",

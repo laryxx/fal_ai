@@ -7,6 +7,7 @@ export type CurrentUserSummary = {
   videoCount: number;
   spendUsdCents: number;
   billableUnits: number;
+  vmakeCredits: number;
 };
 
 export type CreativeSummary = {
@@ -28,6 +29,8 @@ export type CreativeSummary = {
   actualCostUsdCents: number;
   billableUnits: number;
   billingUnit: string;
+  provider: "fal" | "vmake";
+  vmakeCredits: number;
   createdAt: number;
   userEmail: string;
   asset: {
@@ -51,6 +54,7 @@ export type TeamUserSummary = {
   videoCount: number;
   spendUsdCents: number;
   billableUnits: number;
+  vmakeCredits: number;
   lastLoginAt: number | null;
   createdAt: number;
 };
@@ -76,6 +80,7 @@ export type MemberLogEntry = {
   prompt: string;
   modelLabel: string;
   actualCostUsdCents: number;
+  vmakeCredits: number;
   outputUrl: string | null;
   outputMimeType: string | null;
   createdAt: number;
@@ -89,6 +94,7 @@ export type MemberDetail = {
     role: "admin" | "member";
     createdAt: number;
     spendUsdCents: number;
+    vmakeCredits: number;
     creativeCount: number;
     imageCount: number;
     videoCount: number;
@@ -100,6 +106,7 @@ export type MemberDetail = {
 
 export type AppData = {
   configurationError: string | null;
+  vmakeEnabled: boolean;
   bootstrapRequired: boolean;
   authenticated: boolean;
   snapshot: DashboardSnapshot | null;

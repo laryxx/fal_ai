@@ -55,6 +55,23 @@ export async function uploadToR2(args: {
   };
 }
 
+export async function createPresignedUploadUrl(args: {
+  key: string;
+  contentType: string;
+  expiresIn?: number;
+}) {
+  const env = getServerEnv();
+  return await getSignedUrl(
+    getClient(),
+    new PutObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: args.key,
+      ContentType: args.contentType,
+    }),
+    { expiresIn: args.expiresIn ?? 300 },
+  );
+}
+
 export async function createSignedR2DownloadUrl(args: {
   publicUrl: string;
   fileName: string;

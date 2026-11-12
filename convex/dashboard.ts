@@ -58,6 +58,7 @@ export const getSnapshot = query({
         videoCount: currentUser.videoCount,
         spendUsdCents: currentUser.spendUsdCents,
         billableUnits: currentUser.billableUnits,
+        vmakeCredits: currentUser.vmakeCredits ?? 0,
       },
       creatives: creatives.map((creative) => ({
         id: creative._id,
@@ -79,6 +80,8 @@ export const getSnapshot = query({
           creative.actualCostUsdCents ?? creative.estimatedCostUsdCents,
         billableUnits: creative.billableUnits,
         billingUnit: creative.billingUnit,
+        provider: creative.provider ?? "fal",
+        vmakeCredits: creative.vmakeCredits ?? 0,
         createdAt: creative.createdAt,
         userEmail:
           currentUser.role === "admin"

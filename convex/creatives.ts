@@ -126,6 +126,91 @@ export const markFailed = mutation({
     await ctx.db.patch(args.creativeId, {
       status: "failed",
       errorMessage: args.errorMessage,
+      // Vmake only deducts credits when it produces an image, so a failed
+      // enhancement costs nothing.
+      ...(creative.provider === "vmake"
+        ? { estimatedCostUsdCents: 0, vmakeCredits: 0 }
+        : {}),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const createEnhancement = mutation({
+  args: {
+    serverSecret: v.string(),
+    userId: v.id("users"),
+    sourceCreativeId: v.id("creatives"),
+    modelFamily: v.string(),
+    modelLabel: v.string(),
+    endpointId: v.string(),
+    resolution: v.string(),
+    estimatedCostUsdCents: v.number(),
+    vmakeCredits: v.number(),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const user = await getUserById(ctx, args.userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const source = await ctx.db.get(args.sourceCreativeId);
+    if (!source || (source.userId !== args.userId && user.role !== "admin")) {
+      throw new Error("Image not found");
+    }
+    if (source.kind !== "image" || source.status !== "completed" || !source.outputUrl) {
+      throw new Error("Only finished images can be enhanced");
+    }
+    if (source.provider === "vmake") {
+      throw new Error("This image is already enhanced");
+    }
+
+    const now = Date.now();
+    const creativeId = await ctx.db.insert("creatives", {
+      userId: args.userId,
+      batchId: `enhance-${args.sourceCreativeId}-${now}`,
+      kind: "image",
+      status: "processing",
+      provider: "vmake",
+      modelFamily: args.modelFamily,
+      modelLabel: args.modelLabel,
+      endpointId: args.endpointId,
+      prompt: source.prompt,
+      aspectRatio: source.aspectRatio,
+      position: 1,
+      referenceAssetIds: source.outputAssetId ? [source.outputAssetId] : [],
+      resolution: args.resolution,
+      estimatedCostUsdCents: args.estimatedCostUsdCents,
+      billableUnits: 1,
+      billingUnit: "image",
+      vmakeCredits: args.vmakeCredits,
+      sourceCreativeId: args.sourceCreativeId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { creativeId, sourceUrl: source.outputUrl };
+  },
+});
+
+export const setProviderTaskId = mutation({
+  args: {
+    serverSecret: v.string(),
+    creativeId: v.id("creatives"),
+    providerTaskId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const creative = await ctx.db.get(args.creativeId);
+    if (!creative || creative.status === "completed" || creative.status === "failed") {
+      return;
+    }
+
+    await ctx.db.patch(args.creativeId, {
+      providerTaskId: args.providerTaskId,
       updatedAt: Date.now(),
     });
   },
@@ -193,6 +278,9 @@ export const completeCreative = mutation({
       videoCount: user.videoCount + (creative.kind === "video" ? 1 : 0),
       spendUsdCents: user.spendUsdCents + args.actualCostUsdCents,
       billableUnits: user.billableUnits + creative.billableUnits,
+      ...(creative.vmakeCredits
+        ? { vmakeCredits: (user.vmakeCredits ?? 0) + creative.vmakeCredits }
+        : {}),
       updatedAt: now,
     });
 

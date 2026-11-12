@@ -9,12 +9,14 @@ import {
   convexListTeam,
 } from "@/lib/convex";
 import type { AppData } from "@/lib/types";
+import { isVmakeConfigured } from "@/lib/vmake";
 
 export async function loadAppData(session: AppSession | null): Promise<AppData> {
   const baseEnvState = getBaseEnvSafe();
   if (!baseEnvState.ok) {
     return {
       configurationError: baseEnvState.error,
+      vmakeEnabled: false,
       bootstrapRequired: false,
       authenticated: false,
       snapshot: null,
@@ -31,6 +33,7 @@ export async function loadAppData(session: AppSession | null): Promise<AppData> 
   if (!envState.ok) {
     return {
       configurationError: envState.error,
+      vmakeEnabled: false,
       bootstrapRequired: false,
       authenticated: false,
       snapshot: null,
@@ -42,6 +45,7 @@ export async function loadAppData(session: AppSession | null): Promise<AppData> 
   if (!session) {
     return {
       configurationError,
+      vmakeEnabled: mediaEnvState.ok && isVmakeConfigured(),
       bootstrapRequired: bootstrapState.bootstrapRequired,
       authenticated: false,
       snapshot: null,
@@ -60,6 +64,7 @@ export async function loadAppData(session: AppSession | null): Promise<AppData> 
 
   return {
     configurationError,
+    vmakeEnabled: mediaEnvState.ok && isVmakeConfigured(),
     bootstrapRequired: bootstrapState.bootstrapRequired,
     authenticated: true,
     snapshot,

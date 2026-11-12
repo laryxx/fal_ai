@@ -16,6 +16,8 @@ export default defineSchema({
     videoCount: v.number(),
     spendUsdCents: v.number(),
     billableUnits: v.number(),
+    // Vmake credits used by this user's completed enhancements (absent = 0).
+    vmakeCredits: v.optional(v.number()),
   }).index("by_normalizedEmail", ["normalizedEmail"]),
   invites: defineTable({
     email: v.string(),
@@ -82,6 +84,14 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
     completedAt: v.optional(v.number()),
+    // Which service ran the job; absent means fal.ai.
+    provider: v.optional(v.union(v.literal("fal"), v.literal("vmake"))),
+    // Vmake task id, set only when Vmake queues the job instead of finishing it at once.
+    providerTaskId: v.optional(v.string()),
+    // Vmake credits this creative costs (Vmake enhancements only).
+    vmakeCredits: v.optional(v.number()),
+    // For enhancements: the creative whose image was enhanced.
+    sourceCreativeId: v.optional(v.id("creatives")),
   })
     .index("by_user_createdAt", ["userId", "createdAt"])
     .index("by_createdAt", ["createdAt"])

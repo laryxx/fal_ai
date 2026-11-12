@@ -53,6 +53,11 @@ export async function convexCreateInvite(adminUserId: string, email: string) {
   return await client.mutation(anyApi.admin.createInvite, withServerSecret({ adminUserId, email }));
 }
 
+export async function convexGetAllMembersFullLog(adminUserId: string) {
+  const client = getClient();
+  return await client.query(anyApi.admin.getAllMembersFullLog, withServerSecret({ adminUserId }));
+}
+
 export async function convexGetMemberFullLog(adminUserId: string, memberId: string) {
   const client = getClient();
   return await client.query(anyApi.admin.getMemberFullLog, withServerSecret({ adminUserId, memberId }));
@@ -76,6 +81,11 @@ export async function convexDeleteUser(adminUserId: string, userIdToDelete: stri
 export async function convexPromoteToAdmin(adminUserId: string, userIdToPromote: string) {
   const client = getClient();
   return await client.mutation(anyApi.admin.promoteToAdmin, withServerSecret({ adminUserId, userIdToPromote }));
+}
+
+export async function convexDemoteToMember(adminUserId: string, userIdToDemote: string) {
+  const client = getClient();
+  return await client.mutation(anyApi.admin.demoteToMember, withServerSecret({ adminUserId, userIdToDemote }));
 }
 
 export async function convexListTeam(adminUserId: string) {
@@ -114,6 +124,25 @@ export async function convexMarkCreativeFailed(
 export async function convexCompleteCreative(args: Record<string, unknown>) {
   const client = getClient();
   return await client.mutation(anyApi.creatives.completeCreative, withServerSecret(args));
+}
+
+export async function convexCreateEnhancement(args: {
+  userId: string;
+  sourceCreativeId: string;
+  modelFamily: string;
+  modelLabel: string;
+  endpointId: string;
+  resolution: string;
+  estimatedCostUsdCents: number;
+  vmakeCredits: number;
+}): Promise<{ creativeId: string; sourceUrl: string }> {
+  const client = getClient();
+  return await client.mutation(anyApi.creatives.createEnhancement, withServerSecret(args));
+}
+
+export async function convexSetProviderTaskId(creativeId: string, providerTaskId: string) {
+  const client = getClient();
+  return await client.mutation(anyApi.creatives.setProviderTaskId, withServerSecret({ creativeId, providerTaskId }));
 }
 
 export async function convexGetDashboardSnapshot(userId: string) {

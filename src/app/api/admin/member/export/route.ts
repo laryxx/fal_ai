@@ -42,6 +42,7 @@ export async function POST(request: Request) {
     actualCostUsdCents: number;
     billableUnits: number;
     billingUnit: string;
+    vmakeCredits: number;
   }) => ({
     Date: new Date(c.createdAt).toLocaleString("en-US"),
     Kind: c.kind,
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
     "Duration (s)": c.durationSeconds ?? "",
     Status: c.status,
     "Cost (USD)": c.actualCostUsdCents / 100,
+    "Vmake Credits": c.vmakeCredits || "",
     "Billable Units": c.billableUnits,
     "Billing Unit": c.billingUnit,
   }));

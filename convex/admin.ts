@@ -128,6 +128,40 @@ export const promoteToAdmin = mutation({
   },
 });
 
+export const demoteToMember = mutation({
+  args: {
+    serverSecret: v.string(),
+    adminUserId: v.id("users"),
+    userIdToDemote: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const adminUser = await getUserById(ctx, args.adminUserId);
+    if (!adminUser || adminUser.role !== "admin") {
+      throw new Error("Only the admin can demote users");
+    }
+
+    if (args.adminUserId === args.userIdToDemote) {
+      throw new Error("You cannot demote your own account");
+    }
+
+    const userToDemote = await getUserById(ctx, args.userIdToDemote);
+    if (!userToDemote) {
+      throw new Error("User not found");
+    }
+
+    if (userToDemote.role !== "admin") {
+      throw new Error("User is not an admin");
+    }
+
+    await ctx.db.patch(args.userIdToDemote, {
+      role: "member",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 export const getMemberFullLog = query({
   args: {
     serverSecret: v.string(),
@@ -164,6 +198,7 @@ export const getMemberFullLog = query({
         actualCostUsdCents: c.actualCostUsdCents ?? c.estimatedCostUsdCents,
         billableUnits: c.billableUnits,
         billingUnit: c.billingUnit,
+        vmakeCredits: c.status === "completed" ? c.vmakeCredits ?? 0 : 0,
       })),
     };
   },
@@ -214,6 +249,7 @@ export const getMemberDetail = query({
         role: member.role,
         createdAt: member.createdAt,
         spendUsdCents: member.spendUsdCents,
+        vmakeCredits: member.vmakeCredits ?? 0,
         creativeCount: member.creativeCount,
         imageCount: member.imageCount,
         videoCount: member.videoCount,
@@ -227,6 +263,7 @@ export const getMemberDetail = query({
         prompt: c.prompt,
         modelLabel: c.modelLabel,
         actualCostUsdCents: c.actualCostUsdCents ?? c.estimatedCostUsdCents,
+        vmakeCredits: c.vmakeCredits ?? 0,
         outputUrl: c.outputUrl ?? null,
         outputMimeType: c.outputMimeType ?? null,
         createdAt: c.createdAt,
@@ -263,6 +300,7 @@ export const listTeamFiltered = query({
           email: user.email,
           role: user.role,
           spendUsdCents: user.spendUsdCents,
+          vmakeCredits: user.vmakeCredits ?? 0,
           creativeCount: user.creativeCount,
           lastLoginAt: user.lastLoginAt ?? null,
           createdAt: user.createdAt,
@@ -277,13 +315,20 @@ export const listTeamFiltered = query({
       )
       .collect();
 
-    const userStats = new Map<string, { spendUsdCents: number; creativeCount: number }>();
+    const userStats = new Map<
+      string,
+      { spendUsdCents: number; vmakeCredits: number; creativeCount: number }
+    >();
     for (const creative of creatives) {
       const key = creative.userId as string;
-      const existing = userStats.get(key) ?? { spendUsdCents: 0, creativeCount: 0 };
+      const existing =
+        userStats.get(key) ?? { spendUsdCents: 0, vmakeCredits: 0, creativeCount: 0 };
       userStats.set(key, {
         spendUsdCents:
           existing.spendUsdCents + (creative.actualCostUsdCents ?? 0),
+        vmakeCredits:
+          existing.vmakeCredits +
+          (creative.status === "completed" ? creative.vmakeCredits ?? 0 : 0),
         creativeCount: existing.creativeCount + 1,
       });
     }
@@ -297,6 +342,7 @@ export const listTeamFiltered = query({
         email: user.email,
         role: user.role,
         spendUsdCents: stats.spendUsdCents,
+        vmakeCredits: stats.vmakeCredits,
         creativeCount: stats.creativeCount,
         lastLoginAt: user.lastLoginAt ?? null,
         createdAt: user.createdAt,
@@ -304,6 +350,52 @@ export const listTeamFiltered = query({
     }
 
     return result.sort((a, b) => b.spendUsdCents - a.spendUsdCents);
+  },
+});
+
+export const getAllMembersFullLog = query({
+  args: {
+    serverSecret: v.string(),
+    adminUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const adminUser = await getUserById(ctx, args.adminUserId);
+    if (!adminUser || adminUser.role !== "admin") {
+      throw new Error("Only admin can export all member data");
+    }
+
+    const users = await ctx.db.query("users").collect();
+    const allCreatives = await ctx.db.query("creatives").collect();
+
+    const creativesByUser = new Map<string, typeof allCreatives>();
+    for (const creative of allCreatives) {
+      const key = creative.userId as string;
+      if (!creativesByUser.has(key)) creativesByUser.set(key, []);
+      creativesByUser.get(key)!.push(creative);
+    }
+
+    return users
+      .map((user) => {
+        const userCreatives = (creativesByUser.get(user._id as string) ?? [])
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .map((c) => ({
+            createdAt: c.createdAt,
+            kind: c.kind,
+            modelLabel: c.modelLabel,
+            prompt: c.prompt,
+            aspectRatio: c.aspectRatio,
+            durationSeconds: c.durationSeconds ?? null,
+            status: c.status,
+            actualCostUsdCents: c.actualCostUsdCents ?? c.estimatedCostUsdCents,
+            billableUnits: c.billableUnits,
+            billingUnit: c.billingUnit,
+            vmakeCredits: c.status === "completed" ? c.vmakeCredits ?? 0 : 0,
+          }));
+        return { email: user.email, creatives: userCreatives };
+      })
+      .filter((u) => u.creatives.length > 0);
   },
 });
 
@@ -336,6 +428,7 @@ export const listTeam = query({
           videoCount: user.videoCount,
           spendUsdCents: user.spendUsdCents,
           billableUnits: user.billableUnits,
+          vmakeCredits: user.vmakeCredits ?? 0,
           lastLoginAt: user.lastLoginAt ?? null,
           createdAt: user.createdAt,
         }))

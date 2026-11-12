@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { startTransition, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, startTransition, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Copy,
@@ -17,6 +17,7 @@ import {
   Upload,
   Users,
   Wallet,
+  Wand2,
   X,
 } from "lucide-react";
 import {
@@ -37,10 +38,12 @@ type Tab = "image" | "video";
 type UploadPreview = {
   file: File;
   previewUrl: string;
+  uploadedUrl?: string;
+  uploading: boolean;
 };
 
 const defaultImageModelId = "nano-banana-pro";
-const defaultVideoModelId = "sora-2";
+const defaultVideoModelId = "ltx-2.3-fast";
 
 function buildGenerationFormData(args: {
   kind: Tab;
@@ -68,7 +71,9 @@ function buildGenerationFormData(args: {
   }
 
   for (const item of args.references ?? []) {
-    formData.append("references", item.file);
+    if (item.uploadedUrl) {
+      formData.append("referenceUrls", item.uploadedUrl);
+    }
   }
 
   return formData;
@@ -91,6 +96,10 @@ function resolveCreativeAspectRatio(creative: CreativeSummary) {
   return options.includes(creative.aspectRatio)
     ? creative.aspectRatio
     : options[0];
+}
+
+function formatVmakeCredits(credits: number) {
+  return `${credits} Vmake credit${credits === 1 ? "" : "s"}`;
 }
 
 function getCreativeDownloadName(creative: CreativeSummary) {
@@ -129,13 +138,13 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [imagePrompt, setImagePrompt] = useState("");
   const [videoPrompt, setVideoPrompt] = useState("");
   const [imageModelId, setImageModelId] = useState("nano-banana-pro");
-  const [videoModelId, setVideoModelId] = useState("sora-2");
+  const [videoModelId, setVideoModelId] = useState(defaultVideoModelId);
   const [imageAspectRatio, setImageAspectRatio] = useState("16:9");
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9");
   const [imageCount, setImageCount] = useState("1");
   const [videoCount, setVideoCount] = useState("1");
   const [videoDuration, setVideoDuration] = useState("8");
-  const [videoQuality, setVideoQuality] = useState("720p");
+  const [videoQuality, setVideoQuality] = useState("1080p");
   const [inviteEmail, setInviteEmail] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -147,6 +156,47 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [filteredUsers, setFilteredUsers] = useState(initialData.team?.users ?? []);
   const [memberDetail, setMemberDetail] = useState<MemberDetail | null>(null);
   const [memberDetailTab, setMemberDetailTab] = useState<"log" | "summary">("log");
+
+  const isUploading =
+    imageReferences.some((r) => r.uploading) ||
+    videoReferences.some((r) => r.uploading);
+
+  async function uploadReferenceFile(
+    previewUrl: string,
+    file: File,
+    setter: Dispatch<SetStateAction<UploadPreview[]>>,
+  ) {
+    try {
+      const res = await fetch("/api/upload/reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: file.name || "reference.png",
+          contentType: file.type || "image/png",
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to get upload URL");
+      const { presignedUrl, publicUrl } = await res.json() as {
+        presignedUrl: string;
+        publicUrl: string;
+      };
+      await fetch(presignedUrl, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": file.type || "image/png" },
+      });
+      setter((prev) =>
+        prev.map((p) =>
+          p.previewUrl === previewUrl
+            ? { ...p, uploading: false, uploadedUrl: publicUrl }
+            : p,
+        ),
+      );
+    } catch {
+      setter((prev) => prev.filter((p) => p.previewUrl !== previewUrl));
+      setMessage("Failed to upload reference image. Please try again.");
+    }
+  }
 
   async function submitGeneration(args: {
     kind: Tab;
@@ -315,6 +365,32 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     }
   }
 
+  async function enhanceCreative(creative: CreativeSummary) {
+    setBusy(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ creativeId: creative.id }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+      if (!response.ok) {
+        setMessage(payload.error ?? "Could not start the enhancement");
+        return;
+      }
+
+      setMessage("Enhancing with Vmake (10 credits). The result appears in the gallery shortly.");
+      await refreshData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function regenerateCreative(creative: CreativeSummary) {
     const modelId = resolveCreativeModelId(creative);
     const aspectRatio = resolveCreativeAspectRatio(creative);
@@ -337,7 +413,10 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       return;
     }
 
-    const duration = String(creative.durationSeconds ?? 8);
+    // Old creatives (e.g. retired Sora 2) may have a duration the fallback model rejects.
+    const durationOptions = getVideoDurationOptions(modelId);
+    const savedDuration = String(creative.durationSeconds ?? 8);
+    const duration = durationOptions.includes(savedDuration) ? savedDuration : durationOptions[0];
     const qualityOptions = getVideoQualityOptions(modelId);
     const quality = qualityOptions.includes(creative.resolution ?? "") ? creative.resolution! : qualityOptions[0];
 
@@ -400,7 +479,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     setMemberDetail(payload);
   }
 
-  async function manageUser(userId: string, action: "delete" | "promote") {
+  async function manageUser(userId: string, action: "delete" | "promote" | "demote") {
     setBusy(true);
     setMessage(null);
 
@@ -417,7 +496,13 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         return;
       }
 
-      setMessage(action === "delete" ? "User deleted." : "User promoted to admin.");
+      setMessage(
+        action === "delete"
+          ? "User deleted."
+          : action === "promote"
+            ? "User promoted to admin."
+            : "User demoted to member.",
+      );
       await refreshData();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Action failed");
@@ -516,7 +601,11 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
             icon={<Wallet className="size-4" />}
             label="Spend"
             value={formatUsdFromCents(snapshot.currentUser.spendUsdCents)}
-            sub={`${snapshot.currentUser.billableUnits} units`}
+            sub={
+              snapshot.currentUser.vmakeCredits > 0
+                ? `${snapshot.currentUser.billableUnits} units · ${formatVmakeCredits(snapshot.currentUser.vmakeCredits)}`
+                : `${snapshot.currentUser.billableUnits} units`
+            }
           />
         </div>
 
@@ -632,7 +721,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
               </div>
 
               <UploadField
-                maxFiles={tab === "image" ? 4 : 1}
+                maxFiles={tab === "image" ? 4 : videoModelId === "seedance-2" ? 5 : 1}
                 previews={tab === "image" ? imageReferences : videoReferences}
                 onAdd={(files) => {
                   const oversized = files.filter((f) => f.size > 4 * 1024 * 1024);
@@ -642,12 +731,18 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                   }
                   const current = tab === "image" ? imageReferences : videoReferences;
                   const setter = tab === "image" ? setImageReferences : setVideoReferences;
-                  const max = tab === "image" ? 4 : 1;
+                  const max = tab === "image" ? 4 : videoModelId === "seedance-2" ? 5 : 1;
                   const newItems = files.map((file) => ({
                     file,
                     previewUrl: URL.createObjectURL(file),
+                    uploading: true as const,
+                    uploadedUrl: undefined,
                   }));
-                  setter([...current, ...newItems].slice(0, max));
+                  const combined = [...current, ...newItems].slice(0, max);
+                  setter(combined);
+                  for (const item of combined.slice(current.length)) {
+                    void uploadReferenceFile(item.previewUrl, item.file, setter);
+                  }
                 }}
                 onRemove={(index) => {
                   const current = tab === "image" ? imageReferences : videoReferences;
@@ -659,17 +754,19 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
 
               <button
                 className="w-full rounded-lg bg-[#ff6633] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#ff7a4d] disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={busy || Boolean(data.configurationError)}
+                disabled={busy || isUploading || Boolean(data.configurationError)}
                 onClick={runGeneration}
                 type="button"
               >
                 <span className="flex items-center justify-center gap-2">
                   <Send className="size-3.5" />
-                  {busy
-                    ? "Submitting..."
-                    : tab === "image"
-                      ? "Generate images"
-                      : "Generate videos"}
+                  {isUploading
+                    ? "Uploading references..."
+                    : busy
+                      ? "Submitting..."
+                      : tab === "image"
+                        ? "Generate images"
+                        : "Generate videos"}
                 </span>
               </button>
 
@@ -746,6 +843,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         ["Invited", formatDateTime(memberDetail.summary.invitedAt)],
                         ["Joined", formatDateTime(memberDetail.summary.acceptedAt ?? memberDetail.summary.createdAt)],
                         ["Total spend", formatUsdFromCents(memberDetail.summary.spendUsdCents)],
+                        ["Vmake credits", String(memberDetail.summary.vmakeCredits)],
                         ["Outputs", String(memberDetail.summary.creativeCount)],
                         ["Images", String(memberDetail.summary.imageCount)],
                         ["Videos", String(memberDetail.summary.videoCount)],
@@ -779,7 +877,10 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                           {/* Date + cost */}
                           <div className="w-28 shrink-0">
                             <p className="font-mono text-[10px] text-[#5c5c66]">{formatDateTime(entry.createdAt)}</p>
-                            <p className="font-mono text-[10px] text-[#ff6633]">{formatUsdFromCents(entry.actualCostUsdCents)}</p>
+                            <p className="font-mono text-[10px] text-[#ff6633]">
+                              {formatUsdFromCents(entry.actualCostUsdCents)}
+                              {entry.vmakeCredits > 0 ? ` · ${entry.vmakeCredits} cr` : ""}
+                            </p>
                           </div>
 
                           {/* Prompt */}
@@ -823,6 +924,23 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
               <div className="flex items-center gap-2">
                 <Shield className="size-4 text-[#ff6633]" />
                 <h2 className="text-base font-semibold tracking-tight">Team</h2>
+                <button
+                  className="ml-auto rounded px-2.5 py-1 font-mono text-[11px] text-[#5c5c66] transition hover:bg-white/[0.06] hover:text-[#ededef]"
+                  onClick={async () => {
+                    const response = await fetch("/api/admin/export/all", { method: "POST" });
+                    if (!response.ok) return;
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `all-members-${new Date().toISOString().slice(0, 10)}.xlsx`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  type="button"
+                >
+                  export all .xlsx
+                </button>
               </div>
 
               <div className="mt-4 flex gap-2">
@@ -902,6 +1020,9 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         </p>
                         <p className="mt-0.5 font-mono text-[11px] text-[#5c5c66]">
                           {member.creativeCount} outputs
+                          {(member.vmakeCredits ?? 0) > 0
+                            ? ` · ${formatVmakeCredits(member.vmakeCredits)}`
+                            : ""}
                         </p>
                       </div>
                       <div className="flex gap-1">
@@ -924,7 +1045,17 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                               >
                                 promote
                               </button>
-                            ) : null}
+                            ) : (
+                              <button
+                                className="rounded px-2 py-1 font-mono text-[11px] text-[#5c5c66] transition hover:bg-white/[0.06] hover:text-[#ededef]"
+                                disabled={busy}
+                                onClick={() => manageUser(member.id, "demote")}
+                                title="Demote to member"
+                                type="button"
+                              >
+                                demote
+                              </button>
+                            )}
                             <button
                               className="rounded px-2 py-1 font-mono text-[11px] text-[#5c5c66] transition hover:bg-red-500/10 hover:text-red-400"
                               disabled={busy}
@@ -999,7 +1130,10 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                 key={creative.id}
                 className="group overflow-hidden rounded-xl border border-white/[0.06] bg-[#111114] transition hover:border-white/[0.12]"
               >
-                <div className="relative aspect-[16/10] bg-[#0c0c0f]">
+                <div
+                  className="relative bg-[#0c0c0f]"
+                  style={{ aspectRatio: creative.aspectRatio.replace(":", "/") }}
+                >
                   {creative.outputUrl ? (
                     creative.kind === "video" ? (
                       <video
@@ -1070,6 +1204,9 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                     <MetaChip accent>
                       {formatUsdFromCents(creative.actualCostUsdCents)}
                     </MetaChip>
+                    {creative.vmakeCredits > 0 ? (
+                      <MetaChip>{formatVmakeCredits(creative.vmakeCredits)}</MetaChip>
+                    ) : null}
                   </div>
                   {creative.errorMessage ? (
                     <p className="rounded-md border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1.5 text-xs text-red-300">
@@ -1086,15 +1223,32 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                       <Copy className="size-3.5" />
                       Copy prompt
                     </button>
-                    <button
-                      className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={busy || Boolean(data.configurationError)}
-                      onClick={() => void regenerateCreative(creative)}
-                      type="button"
-                    >
-                      <RotateCcw className="size-3.5" />
-                      Regenerate
-                    </button>
+                    {creative.provider !== "vmake" ? (
+                      <button
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={busy || Boolean(data.configurationError)}
+                        onClick={() => void regenerateCreative(creative)}
+                        type="button"
+                      >
+                        <RotateCcw className="size-3.5" />
+                        Regenerate
+                      </button>
+                    ) : null}
+                    {data.vmakeEnabled &&
+                    creative.kind === "image" &&
+                    creative.status === "completed" &&
+                    creative.provider !== "vmake" ? (
+                      <button
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={busy}
+                        onClick={() => void enhanceCreative(creative)}
+                        title="Sharpen and upscale with Vmake (10 credits)"
+                        type="button"
+                      >
+                        <Wand2 className="size-3.5" />
+                        Enhance
+                      </button>
+                    ) : null}
                     {creative.outputUrl ? (
                       <a
                         className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef]"
@@ -1241,7 +1395,7 @@ function UploadField(props: {
         <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-5">
           {props.previews.map((preview, index) => (
             <div
-              key={`${preview.file.name}-${preview.file.lastModified}`}
+              key={preview.previewUrl}
               className="group relative overflow-hidden rounded-md border border-white/[0.06]"
             >
               <img
@@ -1249,6 +1403,11 @@ function UploadField(props: {
                 className="aspect-square h-full w-full object-cover"
                 src={preview.previewUrl}
               />
+              {preview.uploading ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                </div>
+              ) : null}
               <button
                 className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 opacity-0 transition group-hover:opacity-100"
                 onClick={() => props.onRemove(index)}

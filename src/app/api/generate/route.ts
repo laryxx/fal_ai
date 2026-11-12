@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { readSession } from "@/lib/auth/session";
 import { getServerEnvSafe } from "@/lib/env";
 import {
-  convexCreateAssets,
   convexCreateCreativeBatch,
   convexGetUserById,
 } from "@/lib/convex";
@@ -13,7 +12,6 @@ import {
   prepareVideoRequest,
   videoGenerationSchema,
 } from "@/lib/models";
-import { uploadToR2 } from "@/lib/r2";
 
 function asString(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value : "";
@@ -39,9 +37,9 @@ export async function POST(request: Request) {
 
   const formData = await request.formData();
   const kind = asString(formData.get("kind"));
-  const files = formData
-    .getAll("references")
-    .filter((value): value is File => value instanceof File && value.size > 0);
+  const referenceUrls = formData
+    .getAll("referenceUrls")
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
 
   const parsed =
     kind === "video"
@@ -69,33 +67,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const uploadedReferences = [];
-  for (const file of files) {
-    const body = Buffer.from(await file.arrayBuffer());
-    const uploaded = await uploadToR2({
-      keyPrefix: `references/${user._id}`,
-      fileName: file.name,
-      body,
-      contentType: file.type || "application/octet-stream",
-    });
-
-    uploadedReferences.push({
-      type: "reference",
-      mediaKind: "image",
-      bucket: uploaded.bucket,
-      key: uploaded.key,
-      publicUrl: uploaded.publicUrl,
-      contentType: file.type || "application/octet-stream",
-      fileName: file.name,
-      sizeBytes: file.size,
-    });
-  }
-
-  const referenceAssetIds =
-    uploadedReferences.length > 0
-      ? (await convexCreateAssets(user._id, uploadedReferences)).assetIds
-      : [];
-  const referenceUrls = uploadedReferences.map((reference) => reference.publicUrl);
+  const referenceAssetIds: string[] = [];
   const batchId = crypto.randomUUID();
 
   const creatives = [];
@@ -149,10 +121,10 @@ export async function POST(request: Request) {
         modelFamily: parsed.data.modelId,
         modelLabel:
           parsed.data.kind === "video"
-            ? parsed.data.modelId === "sora-2"
-              ? "Sora 2"
-              : parsed.data.modelId === "veo-3"
-                ? "Veo 3"
+            ? parsed.data.modelId === "veo-3"
+              ? "Veo 3"
+              : parsed.data.modelId === "seedance-2"
+                ? "Seedance 2.0"
                 : "LTX 2.3 Fast"
             : parsed.data.modelId === "nano-banana"
               ? "Nano Banana"

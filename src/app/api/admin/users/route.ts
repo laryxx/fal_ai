@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { readSession } from "@/lib/auth/session";
 import { getBaseEnvSafe } from "@/lib/env";
-import { convexDeleteUser, convexPromoteToAdmin, convexGetUserById } from "@/lib/convex";
+import { convexDeleteUser, convexPromoteToAdmin, convexDemoteToMember, convexGetUserById } from "@/lib/convex";
 
 const actionSchema = z.object({
   userId: z.string().min(1),
-  action: z.enum(["delete", "promote"]),
+  action: z.enum(["delete", "promote", "demote"]),
 });
 
 export async function POST(request: Request) {
@@ -37,8 +37,10 @@ export async function POST(request: Request) {
   try {
     if (action === "delete") {
       await convexDeleteUser(user._id, userId);
-    } else {
+    } else if (action === "promote") {
       await convexPromoteToAdmin(user._id, userId);
+    } else {
+      await convexDemoteToMember(user._id, userId);
     }
     return NextResponse.json({ ok: true });
   } catch (error) {

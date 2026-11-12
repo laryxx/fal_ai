@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export type MediaKind = "image" | "video";
 export type ImageModelId = "nano-banana" | "nano-banana-pro" | "seedream-v4";
-export type VideoModelId = "sora-2" | "ltx-2.3-fast" | "veo-3";
+export type VideoModelId = "ltx-2.3-fast" | "veo-3" | "seedance-2";
 export type AspectRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
 
 export const imageModelOptions = [
@@ -28,22 +28,22 @@ export const imageModelOptions = [
 
 export const videoModelOptions = [
   {
-    id: "sora-2",
-    label: "Sora 2",
-    description: "OpenAI video generation on fal with audio-aware motion.",
-    priceLabel: "$0.10 / second",
-  },
-  {
     id: "ltx-2.3-fast",
     label: "LTX 2.3 Fast",
     description: "Fast open-source video generation with 1080p support.",
-    priceLabel: "$0.04 / second",
+    priceLabel: "$0.06 / second",
   },
   {
     id: "veo-3",
     label: "Veo 3",
     description: "Google video generation with native audio.",
     priceLabel: "$0.40 / second",
+  },
+  {
+    id: "seedance-2",
+    label: "Seedance 2.0",
+    description: "ByteDance cinematic video generation.",
+    priceLabel: "$0.30 / second",
   },
 ] as const;
 
@@ -58,10 +58,10 @@ export const imageGenerationSchema = z.object({
 export const videoGenerationSchema = z.object({
   kind: z.literal("video"),
   prompt: z.string().trim().min(8).max(10000),
-  modelId: z.enum(["sora-2", "ltx-2.3-fast", "veo-3"]),
+  modelId: z.enum(["ltx-2.3-fast", "veo-3", "seedance-2"]),
   aspectRatio: z.enum(["16:9", "9:16"]),
   quality: z.enum(["720p", "1080p"]),
-  duration: z.coerce.number().int().refine((value) => [4, 6, 8, 10, 15].includes(value)),
+  duration: z.coerce.number().int().refine((value) => [4, 5, 6, 8, 10, 12, 15, 16, 20].includes(value)),
   count: z.coerce.number().int().min(1).max(3),
 });
 
@@ -72,15 +72,15 @@ export function getAspectRatioOptions(kind: MediaKind) {
 }
 
 export function getVideoQualityOptions(modelId: string): string[] {
-  if (modelId === "sora-2") return ["720p", "1080p"];
   if (modelId === "ltx-2.3-fast") return ["1080p"];
+  if (modelId === "seedance-2") return ["720p", "1080p"];
   return ["720p"]; // veo-3
 }
 
 export function getVideoDurationOptions(modelId: string): string[] {
-  if (modelId === "sora-2") return ["4", "8", "10", "15"];
   if (modelId === "veo-3") return ["4", "6", "8"];
-  return ["4", "8"]; // ltx-2.3-fast
+  if (modelId === "seedance-2") return ["5", "10", "15"];
+  return ["6", "8", "12", "16", "20"]; // ltx-2.3-fast (fal accepts 6-20s; no 4s)
 }
 
 function getSeedreamImageSize(aspectRatio: AspectRatio) {
@@ -208,42 +208,6 @@ export function prepareVideoRequest(args: {
   const hasReferences = args.referenceUrls.length > 0;
   const primaryReference = args.referenceUrls[0];
 
-  if (args.modelId === "sora-2") {
-    if (hasReferences && !primaryReference) {
-      throw new Error("Sora 2 image-to-video requires one reference image");
-    }
-
-    return {
-      endpointId: hasReferences
-        ? "fal-ai/sora-2/image-to-video"
-        : "fal-ai/sora-2/text-to-video",
-      modelLabel: "Sora 2",
-      modelFamily: args.modelId,
-      estimatedCostUsdCents: args.duration * 10,
-      billingUnit: "second",
-      billableUnits: args.duration,
-      resolution: args.quality,
-      input: hasReferences
-        ? {
-            prompt: args.prompt,
-            image_url: primaryReference,
-            aspect_ratio: args.aspectRatio,
-            duration: args.duration,
-            resolution: args.quality,
-            delete_video: true,
-            model: "sora-2",
-          }
-        : {
-            prompt: args.prompt,
-            aspect_ratio: args.aspectRatio,
-            duration: args.duration,
-            resolution: args.quality,
-            delete_video: true,
-            model: "sora-2",
-          },
-    };
-  }
-
   if (args.modelId === "veo-3") {
     if (![4, 6, 8].includes(args.duration)) {
       throw new Error("Veo 3 is configured for 4s, 6s, or 8s clips here");
@@ -265,8 +229,55 @@ export function prepareVideoRequest(args: {
     };
   }
 
-  if (![4, 8].includes(args.duration)) {
-    throw new Error("LTX 2.3 Fast is configured for 4s or 8s clips here");
+  if (args.modelId === "seedance-2") {
+    if (![5, 10, 15].includes(args.duration)) {
+      throw new Error("Seedance 2.0 is configured for 5s, 10s, or 15s clips here");
+    }
+
+    const costPerSecond = args.quality === "1080p" ? 68 : 30;
+
+    const multiReference = args.referenceUrls.length > 1;
+    const endpointId = !hasReferences
+      ? "bytedance/seedance-2.0/text-to-video"
+      : multiReference
+        ? "bytedance/seedance-2.0/reference-to-video"
+        : "bytedance/seedance-2.0/image-to-video";
+
+    return {
+      endpointId,
+      modelLabel: "Seedance 2.0",
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: args.duration * costPerSecond,
+      billingUnit: "second",
+      billableUnits: args.duration,
+      resolution: args.quality,
+      input: multiReference
+        ? {
+            prompt: args.prompt,
+            image_urls: args.referenceUrls,
+            duration: args.duration,
+            resolution: args.quality,
+            aspect_ratio: args.aspectRatio,
+          }
+        : hasReferences
+          ? {
+              prompt: args.prompt,
+              image_url: primaryReference,
+              duration: args.duration,
+              resolution: args.quality,
+              aspect_ratio: args.aspectRatio,
+            }
+          : {
+              prompt: args.prompt,
+              duration: args.duration,
+              resolution: args.quality,
+              aspect_ratio: args.aspectRatio,
+            },
+    };
+  }
+
+  if (![6, 8, 12, 16, 20].includes(args.duration)) {
+    throw new Error("LTX 2.3 Fast is configured for 6s, 8s, 12s, 16s, or 20s clips here");
   }
 
   return {
@@ -275,7 +286,7 @@ export function prepareVideoRequest(args: {
       : "fal-ai/ltx-2.3/text-to-video/fast",
     modelLabel: "LTX 2.3 Fast",
     modelFamily: args.modelId,
-    estimatedCostUsdCents: args.duration * 4,
+    estimatedCostUsdCents: args.duration * 6,
     billingUnit: "second",
     billableUnits: args.duration,
     resolution: "1080p",
