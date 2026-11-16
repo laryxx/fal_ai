@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Copy,
   Download,
+  Eraser,
   Film,
   ImagePlus,
   LogOut,
@@ -34,14 +35,18 @@ import {
 } from "@/lib/models";
 import type { AppData, CreativeSummary, MemberDetail } from "@/lib/types";
 import {
+  imageEnhanceOption,
+  imageRemoveOption,
+  isVmakeOutputOf,
+  MAX_UPLOAD_IMAGE_BYTES,
   MAX_UPLOAD_VIDEO_BYTES,
-  type VideoResolution,
-  type VideoTier,
+  type VmakeOperation,
 } from "@/lib/vmake-options";
 import {
-  VideoEnhanceDialog,
-  type VideoEnhanceTarget,
-} from "@/components/video-enhance-dialog";
+  VmakeDialog,
+  type VmakeSelection,
+  type VmakeTarget,
+} from "@/components/vmake-dialog";
 
 type Tab = "image" | "video";
 type UploadPreview = {
@@ -105,6 +110,22 @@ function resolveCreativeAspectRatio(creative: CreativeSummary) {
   return options.includes(creative.aspectRatio)
     ? creative.aspectRatio
     : options[0];
+}
+
+function readImageMetadata(file: File) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("This browser can't read that image. Try a JPG or PNG file."));
+    };
+    image.src = url;
+  });
 }
 
 function readVideoMetadata(file: File) {
@@ -204,8 +225,11 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [videoEnhanceTarget, setVideoEnhanceTarget] = useState<VideoEnhanceTarget | null>(null);
-  const [videoUploadProgress, setVideoUploadProgress] = useState<number | null>(null);
+  const [vmakeDialog, setVmakeDialog] = useState<{
+    target: VmakeTarget;
+    operation: VmakeOperation;
+  } | null>(null);
+  const [mediaUploadProgress, setMediaUploadProgress] = useState<number | null>(null);
   const [imageReferences, setImageReferences] = useState<UploadPreview[]>([]);
   const [videoReferences, setVideoReferences] = useState<UploadPreview[]>([]);
   const currentYear = new Date().getFullYear();
@@ -423,54 +447,11 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     }
   }
 
-  async function enhanceCreative(creative: CreativeSummary) {
+  async function startVmakeJob(body: Record<string, unknown>, label: string) {
     setBusy(true);
     setMessage(null);
 
     try {
-      const response = await fetch("/api/enhance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "image", creativeId: creative.id }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-
-      if (!response.ok) {
-        setMessage(payload.error ?? "Could not start the enhancement");
-        return;
-      }
-
-      setMessage("Enhancing with Vmake (10 credits). The result appears in the gallery shortly.");
-      await refreshData();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Request failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirmVideoEnhance(tier: VideoTier, resolution: VideoResolution) {
-    const target = videoEnhanceTarget;
-    if (!target) return;
-    setBusy(true);
-    setMessage(null);
-
-    try {
-      const body =
-        target.type === "creative"
-          ? { kind: "video", creativeId: target.creativeId, tier, resolution }
-          : {
-              kind: "video",
-              tier,
-              resolution,
-              upload: {
-                url: target.url,
-                fileName: target.fileName,
-                durationSeconds: target.durationSeconds,
-                width: target.width || undefined,
-                height: target.height || undefined,
-              },
-            };
       const response = await fetch("/api/enhance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -482,43 +463,97 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       };
 
       if (!response.ok) {
-        setMessage(payload.error ?? "Could not start the video enhancement");
-        return;
+        setMessage(payload.error ?? "Could not start the Vmake job");
+        return false;
       }
 
-      setVideoEnhanceTarget(null);
       setMessage(
-        `Enhancing video with Vmake (${payload.credits ?? "?"} credits). Larger outputs can take several minutes.`,
+        `${label} with Vmake (${payload.credits ?? "?"} credits). The result appears in the gallery when it's ready.`,
       );
       await refreshData();
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Request failed");
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  async function uploadVideoForEnhancement(file: File) {
-    setMessage(null);
+  /** One-click image jobs straight from a gallery card. */
+  function runImageJob(creative: CreativeSummary, operation: VmakeOperation) {
+    void startVmakeJob(
+      { kind: "image", operation, creativeId: creative.id },
+      operation === "enhance" ? "Enhancing image" : "Removing watermark",
+    );
+  }
 
-    if (file.size > MAX_UPLOAD_VIDEO_BYTES) {
+  async function confirmVmakeDialog(selection: VmakeSelection) {
+    const dialog = vmakeDialog;
+    if (!dialog) return;
+    const { target } = dialog;
+
+    const source =
+      target.type === "creative"
+        ? { creativeId: target.creativeId }
+        : {
+            upload: {
+              url: target.url,
+              fileName: target.fileName,
+              durationSeconds: target.durationSeconds,
+              width: target.width || undefined,
+              height: target.height || undefined,
+            },
+          };
+    const options =
+      selection.kind === "video"
+        ? selection.operation === "enhance"
+          ? { tier: selection.tier, resolution: selection.resolution }
+          : { mode: selection.mode }
+        : {};
+    const label =
+      selection.operation === "enhance"
+        ? `Enhancing ${selection.kind}`
+        : selection.kind === "image"
+          ? "Removing watermark"
+          : "Cleaning up video";
+
+    const started = await startVmakeJob(
+      { kind: selection.kind, operation: selection.operation, ...source, ...options },
+      label,
+    );
+    if (started) setVmakeDialog(null);
+  }
+
+  async function uploadMediaForVmake(file: File) {
+    setMessage(null);
+    const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : null;
+    if (!kind) {
+      setMessage("Choose an image or a video file.");
+      return;
+    }
+
+    const limit = kind === "video" ? MAX_UPLOAD_VIDEO_BYTES : MAX_UPLOAD_IMAGE_BYTES;
+    if (file.size > limit) {
       setMessage(
-        `That video is ${Math.round(file.size / 1024 / 1024)} MB; the limit is ${Math.round(
-          MAX_UPLOAD_VIDEO_BYTES / 1024 / 1024,
+        `That file is ${Math.round(file.size / 1024 / 1024)} MB; the ${kind} limit is ${Math.round(
+          limit / 1024 / 1024,
         )} MB.`,
       );
       return;
     }
 
     try {
-      const metadata = await readVideoMetadata(file);
-      const contentType = file.type || "video/mp4";
-      setVideoUploadProgress(0);
+      const metadata =
+        kind === "video" ? await readVideoMetadata(file) : { ...(await readImageMetadata(file)), durationSeconds: undefined };
+      const contentType = file.type;
+      const fileName = file.name || (kind === "video" ? "video.mp4" : "image.png");
+      setMediaUploadProgress(0);
 
       const presign = await fetch("/api/upload/reference", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: file.name || "video.mp4", contentType, purpose: "video" }),
+        body: JSON.stringify({ fileName, contentType, purpose: "media" }),
       });
       const presignPayload = (await presign.json().catch(() => ({}))) as {
         presignedUrl?: string;
@@ -529,20 +564,24 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         throw new Error(presignPayload.error ?? "Could not start the upload");
       }
 
-      await putFileWithProgress(presignPayload.presignedUrl, file, contentType, setVideoUploadProgress);
+      await putFileWithProgress(presignPayload.presignedUrl, file, contentType, setMediaUploadProgress);
 
-      setVideoEnhanceTarget({
-        type: "upload",
-        url: presignPayload.publicUrl,
-        fileName: file.name || "video.mp4",
-        durationSeconds: metadata.durationSeconds,
-        width: metadata.width,
-        height: metadata.height,
+      setVmakeDialog({
+        operation: "enhance",
+        target: {
+          type: "upload",
+          kind,
+          url: presignPayload.publicUrl,
+          fileName,
+          durationSeconds: metadata.durationSeconds,
+          width: metadata.width,
+          height: metadata.height,
+        },
       });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Upload failed");
     } finally {
-      setVideoUploadProgress(null);
+      setMediaUploadProgress(null);
     }
   }
 
@@ -1278,21 +1317,21 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
               {data.vmakeEnabled ? (
                 <label
                   className={`inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] ${
-                    busy || videoUploadProgress !== null ? "pointer-events-none opacity-40" : "cursor-pointer"
+                    busy || mediaUploadProgress !== null ? "pointer-events-none opacity-40" : "cursor-pointer"
                   }`}
-                  title="Upload your own video and enhance it with Vmake"
+                  title="Upload your own image or video to enhance it or remove watermarks with Vmake"
                 >
                   <Upload className="size-3.5" />
-                  {videoUploadProgress !== null
-                    ? `Uploading video... ${videoUploadProgress}%`
-                    : "Enhance a video file"}
+                  {mediaUploadProgress !== null
+                    ? `Uploading... ${mediaUploadProgress}%`
+                    : "Upload to enhance / remove"}
                   <input
-                    accept="video/*"
+                    accept="image/*,video/*"
                     className="hidden"
                     onChange={(event) => {
                       const file = event.target.files?.[0];
                       event.target.value = "";
-                      if (file) void uploadVideoForEnhancement(file);
+                      if (file) void uploadMediaForVmake(file);
                     }}
                     type="file"
                   />
@@ -1414,46 +1453,73 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         Regenerate
                       </button>
                     ) : null}
-                    {data.vmakeEnabled &&
-                    creative.kind === "image" &&
-                    creative.status === "completed" &&
-                    creative.provider !== "vmake" ? (
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                        disabled={busy}
-                        onClick={() => void enhanceCreative(creative)}
-                        title="Sharpen and upscale with Vmake (10 credits)"
-                        type="button"
-                      >
-                        <Wand2 className="size-3.5" />
-                        Enhance
-                      </button>
+                    {data.vmakeEnabled && creative.status === "completed" && creative.kind === "image" ? (
+                      <>
+                        {!isVmakeOutputOf(creative.modelFamily, "enhance") ? (
+                          <button
+                            className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={busy}
+                            onClick={() => runImageJob(creative, "enhance")}
+                            title={`Sharpen and upscale with Vmake (${imageEnhanceOption.credits} credits)`}
+                            type="button"
+                          >
+                            <Wand2 className="size-3.5" />
+                            Enhance
+                          </button>
+                        ) : null}
+                        {!isVmakeOutputOf(creative.modelFamily, "remove") ? (
+                          <button
+                            className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={busy}
+                            onClick={() => runImageJob(creative, "remove")}
+                            title={`Remove watermarks, logos and overlaid text with Vmake (${imageRemoveOption.credits} credits)`}
+                            type="button"
+                          >
+                            <Eraser className="size-3.5" />
+                            Remove watermark
+                          </button>
+                        ) : null}
+                      </>
                     ) : null}
-                    {data.vmakeEnabled &&
-                    creative.kind === "video" &&
-                    creative.status === "completed" &&
-                    creative.provider !== "vmake" ? (
-                      <button
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                        disabled={busy || !creative.durationSeconds}
-                        onClick={() =>
-                          setVideoEnhanceTarget({
-                            type: "creative",
-                            creativeId: creative.id,
-                            title: `${creative.modelLabel} video`,
-                            durationSeconds: creative.durationSeconds ?? 0,
-                          })
-                        }
-                        title={
-                          creative.durationSeconds
-                            ? "Enhance and upscale with Vmake (2K / 4K / 8K)"
-                            : "This video's length is unknown"
-                        }
-                        type="button"
-                      >
-                        <Wand2 className="size-3.5" />
-                        Enhance
-                      </button>
+                    {data.vmakeEnabled && creative.status === "completed" && creative.kind === "video" ? (
+                      <>
+                        {(["enhance", "remove"] as const)
+                          .filter((operation) => !isVmakeOutputOf(creative.modelFamily, operation))
+                          .map((operation) => (
+                            <button
+                              key={operation}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={busy || !creative.durationSeconds}
+                              onClick={() =>
+                                setVmakeDialog({
+                                  operation,
+                                  target: {
+                                    type: "creative",
+                                    kind: "video",
+                                    creativeId: creative.id,
+                                    title: `${creative.modelLabel} video`,
+                                    durationSeconds: creative.durationSeconds ?? 0,
+                                  },
+                                })
+                              }
+                              title={
+                                !creative.durationSeconds
+                                  ? "This video's length is unknown"
+                                  : operation === "enhance"
+                                    ? "Enhance and upscale with Vmake (2K / 4K / 8K)"
+                                    : "Remove watermarks, subtitles or objects with Vmake"
+                              }
+                              type="button"
+                            >
+                              {operation === "enhance" ? (
+                                <Wand2 className="size-3.5" />
+                              ) : (
+                                <Eraser className="size-3.5" />
+                              )}
+                              {operation === "enhance" ? "Enhance" : "Remove"}
+                            </button>
+                          ))}
+                      </>
                     ) : null}
                     {creative.outputUrl ? (
                       <a
@@ -1472,12 +1538,14 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
           </div>
         </section>
       </main>
-      {videoEnhanceTarget ? (
-        <VideoEnhanceDialog
+      {vmakeDialog ? (
+        <VmakeDialog
+          key={`${vmakeDialog.target.type}-${vmakeDialog.operation}`}
           busy={busy}
-          onCancel={() => setVideoEnhanceTarget(null)}
-          onConfirm={(tier, resolution) => void confirmVideoEnhance(tier, resolution)}
-          target={videoEnhanceTarget}
+          initialOperation={vmakeDialog.operation}
+          onCancel={() => setVmakeDialog(null)}
+          onConfirm={(selection) => void confirmVmakeDialog(selection)}
+          target={vmakeDialog.target}
         />
       ) : null}
     </div>

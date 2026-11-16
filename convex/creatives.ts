@@ -142,7 +142,8 @@ export const createEnhancement = mutation({
     serverSecret: v.string(),
     userId: v.id("users"),
     kind: v.union(v.literal("image"), v.literal("video")),
-    // Either a gallery creative to enhance...
+    // Vmake model family of the new creative, e.g. "vmake-enhance" or "vmake-video-remove".
+    // Either a gallery creative to process...
     sourceCreativeId: v.optional(v.id("creatives")),
     // ...or a file the user uploaded to R2 (already validated by the caller).
     upload: v.optional(
@@ -182,10 +183,11 @@ export const createEnhancement = mutation({
         throw new Error("Creative not found");
       }
       if (source.kind !== args.kind || source.status !== "completed" || !source.outputUrl) {
-        throw new Error(`Only finished ${args.kind}s can be enhanced`);
+        throw new Error(`Only finished ${args.kind}s can be processed`);
       }
-      if (source.provider === "vmake") {
-        throw new Error(`This ${args.kind} is already enhanced`);
+      // Repeating the same Vmake operation on its own output wastes credits.
+      if (source.modelFamily === args.modelFamily) {
+        throw new Error(`This ${args.kind} was already processed this way`);
       }
       prompt = source.prompt;
       aspectRatio = source.aspectRatio;

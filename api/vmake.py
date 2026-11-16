@@ -39,13 +39,13 @@ from action_api_sdk import (  # noqa: E402
 )
 
 # Vmake catalog ids (checked 2026-11-16) that the app may run.
-# SKM0004 = Fast 2K image repair; the rest are video quality repair
-# (Fast 2K/4K, Quality 2K/4K/8K, Master 2K/4K/8K).
 ALLOWED_TASKS = {
-    "SKM0004",
-    "SKM0001", "SKM0011",
-    "SKM0008", "SKM0009", "SKM0010",
-    "SKM0012", "SKM0013", "SKM0014",
+    "SKM0004",  # image enhance
+    "SKM0006",  # image watermark removal
+    "SKM0001", "SKM0011",  # video enhance: Fast 2K / 4K
+    "SKM0008", "SKM0009", "SKM0010",  # Quality 2K / 4K / 8K
+    "SKM0012", "SKM0013", "SKM0014",  # Master 2K / 4K / 8K
+    "SKM0007", "SKM0002", "SKM0003", "SKM0005",  # video removal: watermark / subtitle / smart / smart pro
 }
 DEFAULT_TASK = "SKM0004"
 SUCCESS_STATUS = 10

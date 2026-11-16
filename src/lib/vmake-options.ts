@@ -70,6 +70,65 @@ export function getVideoEnhanceQuote(tier: VideoTier, resolution: VideoResolutio
   };
 }
 
-// Uploaded videos are copied into the Vercel function's /tmp before going to
-// Vmake, so keep them comfortably below its 500 MB limit.
+// ---- Removal (watermarks, subtitles, objects) ----
+
+export const imageRemoveOption = {
+  task: "SKM0006",
+  label: "Watermark",
+  credits: 10,
+};
+
+export type RemoveMode = "watermark" | "subtitle" | "smart" | "smart-pro";
+
+export const videoRemoveModes: {
+  id: RemoveMode;
+  label: string;
+  description: string;
+  task: string;
+  creditsPerSecond: number;
+}[] = [
+  { id: "watermark", label: "Watermark", description: "Logos and watermarks, including moving ones.", task: "SKM0007", creditsPerSecond: 2 },
+  { id: "subtitle", label: "Subtitle", description: "Burned-in subtitles and captions.", task: "SKM0002", creditsPerSecond: 2 },
+  { id: "smart", label: "Smart", description: "Unwanted text and objects in general.", task: "SKM0003", creditsPerSecond: 2 },
+  { id: "smart-pro", label: "Smart Pro", description: "Hardest cases, best quality (Pro plan).", task: "SKM0005", creditsPerSecond: 4 },
+];
+
+export function getVideoRemoveQuote(mode: RemoveMode, durationSeconds: number) {
+  const option = videoRemoveModes.find((m) => m.id === mode);
+  if (!option) return null;
+  const seconds = billableVideoSeconds(durationSeconds);
+  const credits = seconds * option.creditsPerSecond;
+  return {
+    task: option.task,
+    seconds,
+    creditsPerSecond: option.creditsPerSecond,
+    credits,
+    usdCents: creditsToUsdCents(credits),
+    label: option.label,
+  };
+}
+
+export type VmakeOperation = "enhance" | "remove";
+
+export const vmakeLabels = {
+  image: {
+    enhance: { modelFamily: "vmake-enhance", modelLabel: "Vmake Enhance" },
+    remove: { modelFamily: "vmake-remove", modelLabel: "Vmake Watermark Remover" },
+  },
+  video: {
+    enhance: { modelFamily: "vmake-video-enhance", modelLabel: "Vmake Video Enhance" },
+    remove: { modelFamily: "vmake-video-remove", modelLabel: "Vmake Video Remover" },
+  },
+} as const;
+
+/** Whether a creative was itself produced by this Vmake operation (so repeating it makes no sense). */
+export function isVmakeOutputOf(modelFamily: string, operation: VmakeOperation) {
+  return operation === "enhance"
+    ? modelFamily === "vmake-enhance" || modelFamily === "vmake-video-enhance"
+    : modelFamily === "vmake-remove" || modelFamily === "vmake-video-remove";
+}
+
+// Uploads are copied into the Vercel function's /tmp before going to Vmake,
+// so keep them comfortably below its 500 MB limit.
 export const MAX_UPLOAD_VIDEO_BYTES = 300 * 1024 * 1024;
+export const MAX_UPLOAD_IMAGE_BYTES = 30 * 1024 * 1024;

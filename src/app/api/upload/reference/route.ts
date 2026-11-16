@@ -8,8 +8,9 @@ import { createPresignedUploadUrl } from "@/lib/r2";
 const schema = z.object({
   fileName: z.string().min(1).max(255),
   contentType: z.string().min(1),
-  // "reference" = reference image for generation; "video" = a video to enhance.
-  purpose: z.enum(["reference", "video"]).optional(),
+  // "reference" = reference image for generation; "media" (or legacy "video") =
+  // an image or video to process with Vmake.
+  purpose: z.enum(["reference", "media", "video"]).optional(),
 });
 
 export async function POST(request: Request) {
@@ -33,13 +34,17 @@ export async function POST(request: Request) {
   }
 
   const purpose = parsed.data.purpose ?? "reference";
-  if (purpose === "video" && !parsed.data.contentType.startsWith("video/")) {
+  const contentType = parsed.data.contentType;
+  if (purpose === "video" && !contentType.startsWith("video/")) {
     return NextResponse.json({ error: "Only video files can be enhanced" }, { status: 400 });
+  }
+  if (purpose === "media" && !contentType.startsWith("video/") && !contentType.startsWith("image/")) {
+    return NextResponse.json({ error: "Only images and videos can be processed" }, { status: 400 });
   }
 
   const env = getServerEnv();
   const sanitized = parsed.data.fileName.replace(/[^a-zA-Z0-9._-]/g, "-");
-  const folder = purpose === "video" ? "uploads" : "references";
+  const folder = purpose === "reference" ? "references" : "uploads";
   const key = `${folder}/${user._id}/${crypto.randomUUID()}-${sanitized}`;
 
   const presignedUrl = await createPresignedUploadUrl({
