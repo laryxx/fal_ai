@@ -1546,7 +1546,9 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                     ) : null}
                     {creative.outputUrl ? (
                       <a
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef]"
+                        // No text size/weight classes: the buttons beside it inherit the page
+                        // font (globals.css sets `button { font: inherit }`), so match them.
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef]"
                         href={getCreativeDownloadHref(creative)}
                         target="creative-download-frame"
                       >
