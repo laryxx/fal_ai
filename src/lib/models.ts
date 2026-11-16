@@ -2,7 +2,26 @@ import { z } from "zod";
 
 export type MediaKind = "image" | "video";
 export type ImageModelId = "nano-banana" | "nano-banana-pro" | "seedream-v4";
-export type VideoModelId = "ltx-2.3-fast" | "veo-3" | "seedance-2";
+export type VideoModelId =
+  | "ltx-2.3-fast"
+  | "veo-3"
+  | "seedance-2"
+  | "wan-2.2"
+  | "kling-o1"
+  | "kling-o1-pro"
+  | "kling-3"
+  | "kling-3-pro";
+
+const videoModelIds = [
+  "ltx-2.3-fast",
+  "veo-3",
+  "seedance-2",
+  "wan-2.2",
+  "kling-o1",
+  "kling-o1-pro",
+  "kling-3",
+  "kling-3-pro",
+] as const;
 export type AspectRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
 
 export const imageModelOptions = [
@@ -45,6 +64,37 @@ export const videoModelOptions = [
     description: "ByteDance cinematic video generation.",
     priceLabel: "$0.30 / second",
   },
+  {
+    // fal removes Wan 2.2 on 2027-01-04 (suggested successor: MiniMax H3 Max).
+    id: "wan-2.2",
+    label: "Wan 2.2",
+    description: "Alibaba Wan 2.2 A14B, 720p, no audio. Leaving fal on Jan 4, 2027.",
+    priceLabel: "$0.08 / second",
+  },
+  {
+    id: "kling-o1",
+    label: "Kling O1",
+    description: "Kling Omni (Standard). Needs at least one reference image; up to 7.",
+    priceLabel: "$0.084 / second",
+  },
+  {
+    id: "kling-o1-pro",
+    label: "Kling O1 Pro",
+    description: "Kling Omni (Pro). Needs at least one reference image; up to 7.",
+    priceLabel: "$0.112 / second",
+  },
+  {
+    id: "kling-3",
+    label: "Kling 3.0",
+    description: "Kling 3.0 Standard, cinematic motion, optional native audio.",
+    priceLabel: "$0.084 / second ($0.126 with audio)",
+  },
+  {
+    id: "kling-3-pro",
+    label: "Kling 3.0 Pro",
+    description: "Kling 3.0 Pro, top quality, optional native audio.",
+    priceLabel: "$0.112 / second ($0.168 with audio)",
+  },
 ] as const;
 
 export const imageGenerationSchema = z.object({
@@ -58,11 +108,13 @@ export const imageGenerationSchema = z.object({
 export const videoGenerationSchema = z.object({
   kind: z.literal("video"),
   prompt: z.string().trim().min(8).max(10000),
-  modelId: z.enum(["ltx-2.3-fast", "veo-3", "seedance-2"]),
+  modelId: z.enum(videoModelIds),
   aspectRatio: z.enum(["16:9", "9:16"]),
   quality: z.enum(["720p", "1080p"]),
-  duration: z.coerce.number().int().refine((value) => [4, 5, 6, 8, 10, 12, 15, 16, 20].includes(value)),
+  duration: z.coerce.number().int().refine((value) => [3, 4, 5, 6, 8, 10, 12, 15, 16, 20].includes(value)),
   count: z.coerce.number().int().min(1).max(3),
+  // Only used by models with optional audio (Kling 3.0).
+  audio: z.enum(["on", "off"]).default("off"),
 });
 
 export function getAspectRatioOptions(kind: MediaKind) {
@@ -74,13 +126,41 @@ export function getAspectRatioOptions(kind: MediaKind) {
 export function getVideoQualityOptions(modelId: string): string[] {
   if (modelId === "ltx-2.3-fast") return ["1080p"];
   if (modelId === "seedance-2") return ["720p", "1080p"];
-  return ["720p"]; // veo-3
+  // Kling Standard and Pro are separate models; this shows their usual output.
+  if (modelId === "kling-o1-pro" || modelId === "kling-3-pro") return ["1080p"];
+  return ["720p"]; // veo-3, wan-2.2, kling-o1, kling-3
 }
 
 export function getVideoDurationOptions(modelId: string): string[] {
   if (modelId === "veo-3") return ["4", "6", "8"];
   if (modelId === "seedance-2") return ["5", "10", "15"];
+  if (modelId === "wan-2.2") return ["5", "10"];
+  if (modelId === "kling-o1" || modelId === "kling-o1-pro") return ["3", "5", "8", "10"];
+  if (modelId === "kling-3" || modelId === "kling-3-pro") return ["3", "5", "10", "15"];
   return ["6", "8", "12", "16", "20"]; // ltx-2.3-fast (fal accepts 6-20s; no 4s)
+}
+
+/** Models with an optional native-audio switch (priced differently with audio on). */
+export function videoModelSupportsAudioToggle(modelId: string) {
+  return modelId === "kling-3" || modelId === "kling-3-pro";
+}
+
+/** How many reference images a video model can take. */
+export function getVideoMaxReferences(modelId: string) {
+  if (modelId === "seedance-2") return 5;
+  if (modelId === "kling-o1" || modelId === "kling-o1-pro") return 7;
+  return 1;
+}
+
+export function videoModelRequiresReference(modelId: string) {
+  return modelId === "kling-o1" || modelId === "kling-o1-pro";
+}
+
+export function getModelLabel(modelId: string) {
+  return (
+    [...imageModelOptions, ...videoModelOptions].find((option) => option.id === modelId)?.label ??
+    modelId
+  );
 }
 
 function getSeedreamImageSize(aspectRatio: AspectRatio) {
@@ -203,10 +283,112 @@ export function prepareVideoRequest(args: {
   aspectRatio: "16:9" | "9:16";
   quality: "720p" | "1080p";
   duration: number;
+  audio?: boolean;
   referenceUrls: string[];
 }) {
   const hasReferences = args.referenceUrls.length > 0;
   const primaryReference = args.referenceUrls[0];
+
+  if (args.modelId === "wan-2.2") {
+    if (![5, 10].includes(args.duration)) {
+      throw new Error("Wan 2.2 is configured for 5s or 10s clips here");
+    }
+    // Wan sets length in frames; fal bills "video seconds" counted at 16 fps.
+    const numFrames = args.duration === 10 ? 161 : 81;
+    const billedSeconds = numFrames / 16;
+    const input: Record<string, unknown> = {
+      prompt: args.prompt,
+      num_frames: numFrames,
+      frames_per_second: 16,
+      resolution: "720p",
+      aspect_ratio: args.aspectRatio,
+    };
+    if (hasReferences) input.image_url = primaryReference;
+
+    return {
+      endpointId: hasReferences
+        ? "fal-ai/wan/v2.2-a14b/image-to-video"
+        : "fal-ai/wan/v2.2-a14b/text-to-video",
+      modelLabel: "Wan 2.2",
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: Math.round(billedSeconds * 8 * 100) / 100,
+      billingUnit: "second",
+      billableUnits: args.duration,
+      resolution: "720p",
+      input,
+    };
+  }
+
+  if (args.modelId === "kling-o1" || args.modelId === "kling-o1-pro") {
+    const pro = args.modelId === "kling-o1-pro";
+    const label = pro ? "Kling O1 Pro" : "Kling O1";
+    if (!hasReferences) {
+      throw new Error(`${label} needs at least one reference image`);
+    }
+    if (![3, 5, 8, 10].includes(args.duration)) {
+      throw new Error(`${label} is configured for 3s, 5s, 8s, or 10s clips here`);
+    }
+    if (args.referenceUrls.length > 7) {
+      throw new Error(`${label} accepts up to 7 reference images`);
+    }
+    const tier = pro ? "" : "standard/";
+    // One image = first frame; several = reference images the prompt can mention as @Image1, @Image2, ...
+    const multiReference = args.referenceUrls.length > 1;
+
+    return {
+      endpointId: multiReference
+        ? `fal-ai/kling-video/o1/${tier}reference-to-video`
+        : `fal-ai/kling-video/o1/${tier}image-to-video`,
+      modelLabel: label,
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: Math.round(args.duration * (pro ? 11.2 : 8.4) * 100) / 100,
+      billingUnit: "second",
+      billableUnits: args.duration,
+      resolution: pro ? "1080p" : "720p",
+      input: multiReference
+        ? {
+            prompt: args.prompt,
+            image_urls: args.referenceUrls,
+            duration: String(args.duration),
+            aspect_ratio: args.aspectRatio,
+          }
+        : {
+            prompt: args.prompt,
+            start_image_url: primaryReference,
+            duration: String(args.duration),
+          },
+    };
+  }
+
+  if (args.modelId === "kling-3" || args.modelId === "kling-3-pro") {
+    const pro = args.modelId === "kling-3-pro";
+    const label = pro ? "Kling 3.0 Pro" : "Kling 3.0";
+    if (![3, 5, 10, 15].includes(args.duration)) {
+      throw new Error(`${label} is configured for 3s, 5s, 10s, or 15s clips here`);
+    }
+    const audio = Boolean(args.audio);
+    const centsPerSecond = pro ? (audio ? 16.8 : 11.2) : audio ? 12.6 : 8.4;
+    const tier = pro ? "pro" : "standard";
+    const input: Record<string, unknown> = {
+      prompt: args.prompt,
+      duration: String(args.duration),
+      generate_audio: audio,
+    };
+    // With a start image, Kling takes the aspect ratio from the image.
+    if (hasReferences) input.start_image_url = primaryReference;
+    else input.aspect_ratio = args.aspectRatio;
+
+    return {
+      endpointId: `fal-ai/kling-video/v3/${tier}/${hasReferences ? "image-to-video" : "text-to-video"}`,
+      modelLabel: label,
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: Math.round(args.duration * centsPerSecond * 100) / 100,
+      billingUnit: "second",
+      billableUnits: args.duration,
+      resolution: audio ? `${pro ? "1080p" : "720p"} + audio` : pro ? "1080p" : "720p",
+      input,
+    };
+  }
 
   if (args.modelId === "veo-3") {
     if (![4, 6, 8].includes(args.duration)) {

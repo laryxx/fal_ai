@@ -29,9 +29,11 @@ import {
 import {
   getAspectRatioOptions,
   getVideoDurationOptions,
+  getVideoMaxReferences,
   getVideoQualityOptions,
   imageModelOptions,
   videoModelOptions,
+  videoModelSupportsAudioToggle,
 } from "@/lib/models";
 import type { AppData, CreativeSummary, MemberDetail } from "@/lib/types";
 import {
@@ -69,6 +71,7 @@ function buildGenerationFormData(args: {
   count: string;
   duration?: string;
   quality?: string;
+  audio?: string;
   references?: UploadPreview[];
 }) {
   const formData = new FormData();
@@ -84,6 +87,10 @@ function buildGenerationFormData(args: {
 
   if (args.kind === "video" && args.quality) {
     formData.set("quality", args.quality);
+  }
+
+  if (args.kind === "video" && args.audio) {
+    formData.set("audio", args.audio);
   }
 
   for (const item of args.references ?? []) {
@@ -232,6 +239,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [videoCount, setVideoCount] = useState("1");
   const [videoDuration, setVideoDuration] = useState("8");
   const [videoQuality, setVideoQuality] = useState("1080p");
+  const [videoAudio, setVideoAudio] = useState("off");
   const [inviteEmail, setInviteEmail] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -298,6 +306,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     count: string;
     duration?: string;
     quality?: string;
+    audio?: string;
     references?: UploadPreview[];
     onSuccess?: () => void;
   }) {
@@ -440,6 +449,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       count: videoCount,
       duration: videoDuration,
       quality: videoQuality,
+      audio: videoModelSupportsAudioToggle(videoModelId) ? videoAudio : undefined,
       references: videoReferences,
       onSuccess: () => {
         setVideoPrompt("");
@@ -638,6 +648,12 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     setVideoDuration(duration);
     setVideoQuality(quality);
     setVideoReferences([]);
+    const audio = videoModelSupportsAudioToggle(modelId)
+      ? (creative.resolution ?? "").includes("audio")
+        ? "on"
+        : "off"
+      : undefined;
+    if (audio) setVideoAudio(audio);
 
     await submitGeneration({
       kind: "video",
@@ -647,6 +663,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       count: "1",
       duration,
       quality,
+      audio,
     });
   }
 
@@ -870,6 +887,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                       setImageModelId(value);
                     } else {
                       setVideoModelId(value);
+                      setVideoReferences((current) => current.slice(0, getVideoMaxReferences(value)));
                       const qualityOpts = getVideoQualityOptions(value);
                       if (!qualityOpts.includes(videoQuality)) setVideoQuality(qualityOpts[0]);
                       const durationOpts = getVideoDurationOptions(value);
@@ -912,6 +930,15 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                     renderLabel={(value) => `${value}s`}
                   />
                 ) : null}
+                {tab === "video" && videoModelSupportsAudioToggle(videoModelId) ? (
+                  <SelectField
+                    label="Audio"
+                    options={["off", "on"]}
+                    value={videoAudio}
+                    onChange={setVideoAudio}
+                    renderLabel={(value) => (value === "on" ? "With audio" : "No audio")}
+                  />
+                ) : null}
               </div>
 
               {/* Model info inline */}
@@ -931,7 +958,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
               </div>
 
               <UploadField
-                maxFiles={tab === "image" ? 4 : videoModelId === "seedance-2" ? 5 : 1}
+                maxFiles={tab === "image" ? 4 : getVideoMaxReferences(videoModelId)}
                 previews={tab === "image" ? imageReferences : videoReferences}
                 onAdd={(files) => {
                   const oversized = files.filter((f) => f.size > 4 * 1024 * 1024);
@@ -941,7 +968,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                   }
                   const current = tab === "image" ? imageReferences : videoReferences;
                   const setter = tab === "image" ? setImageReferences : setVideoReferences;
-                  const max = tab === "image" ? 4 : videoModelId === "seedance-2" ? 5 : 1;
+                  const max = tab === "image" ? 4 : getVideoMaxReferences(videoModelId);
                   const newItems = files.map((file) => ({
                     file,
                     previewUrl: URL.createObjectURL(file),

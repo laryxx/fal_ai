@@ -9,7 +9,9 @@ import { submitFalJob } from "@/lib/fal";
 import {
   imageGenerationSchema,
   prepareImageRequest,
+  getModelLabel,
   prepareVideoRequest,
+  videoModelRequiresReference,
   videoGenerationSchema,
 } from "@/lib/models";
 
@@ -51,6 +53,7 @@ export async function POST(request: Request) {
           quality: asString(formData.get("quality")),
           duration: asString(formData.get("duration")),
           count: asString(formData.get("count")),
+          audio: asString(formData.get("audio")) || undefined,
         })
       : imageGenerationSchema.safeParse({
           kind: "image",
@@ -63,6 +66,17 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Some generation fields are invalid or missing" },
+      { status: 400 },
+    );
+  }
+
+  if (
+    parsed.data.kind === "video" &&
+    videoModelRequiresReference(parsed.data.modelId) &&
+    referenceUrls.length === 0
+  ) {
+    return NextResponse.json(
+      { error: `${getModelLabel(parsed.data.modelId)} needs at least one reference image` },
       { status: 400 },
     );
   }
@@ -83,6 +97,7 @@ export async function POST(request: Request) {
               aspectRatio: parsed.data.aspectRatio,
               quality: parsed.data.quality,
               duration: parsed.data.duration,
+              audio: parsed.data.audio === "on",
               referenceUrls,
             })
           : prepareImageRequest({
@@ -119,18 +134,7 @@ export async function POST(request: Request) {
         kind: parsed.data.kind,
         status: "failed",
         modelFamily: parsed.data.modelId,
-        modelLabel:
-          parsed.data.kind === "video"
-            ? parsed.data.modelId === "veo-3"
-              ? "Veo 3"
-              : parsed.data.modelId === "seedance-2"
-                ? "Seedance 2.0"
-                : "LTX 2.3 Fast"
-            : parsed.data.modelId === "nano-banana"
-              ? "Nano Banana"
-              : parsed.data.modelId === "nano-banana-pro"
-                ? "Nano Banana Pro"
-                : "Seedream V4",
+        modelLabel: getModelLabel(parsed.data.modelId),
         endpointId: "",
         prompt: parsed.data.prompt,
         aspectRatio: parsed.data.aspectRatio,
