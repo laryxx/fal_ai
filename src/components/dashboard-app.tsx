@@ -29,8 +29,11 @@ import {
 import {
   getAspectRatioOptions,
   getVideoDurationOptions,
+  getImageQualityOptions,
   getVideoMaxReferences,
   getVideoQualityOptions,
+  type ImageQuality,
+  imageQualityLabels,
   imageModelOptions,
   videoModelOptions,
   videoModelSupportsAudioToggle,
@@ -85,7 +88,7 @@ function buildGenerationFormData(args: {
     formData.set("duration", args.duration);
   }
 
-  if (args.kind === "video" && args.quality) {
+  if (args.quality) {
     formData.set("quality", args.quality);
   }
 
@@ -232,6 +235,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [imagePrompt, setImagePrompt] = useState("");
   const [videoPrompt, setVideoPrompt] = useState("");
   const [imageModelId, setImageModelId] = useState("nano-banana-pro");
+  const [imageQuality, setImageQuality] = useState("medium");
   const [videoModelId, setVideoModelId] = useState(defaultVideoModelId);
   const [imageAspectRatio, setImageAspectRatio] = useState("16:9");
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9");
@@ -432,6 +436,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         modelId: imageModelId,
         aspectRatio: imageAspectRatio,
         count: imageCount,
+        quality: getImageQualityOptions(imageModelId).length > 0 ? imageQuality : undefined,
         references: imageReferences,
         onSuccess: () => {
           setImagePrompt("");
@@ -622,6 +627,14 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       setImageAspectRatio(aspectRatio);
       setImageCount("1");
       setImageReferences([]);
+      // GPT Image creatives store their quality in `resolution`.
+      const qualityOptions = getImageQualityOptions(modelId);
+      const quality = qualityOptions.includes(creative.resolution as ImageQuality)
+        ? (creative.resolution as string)
+        : qualityOptions.length > 0
+          ? "medium"
+          : undefined;
+      if (quality) setImageQuality(quality);
 
       await submitGeneration({
         kind: "image",
@@ -629,6 +642,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         modelId,
         aspectRatio,
         count: "1",
+        quality,
       });
       return;
     }
@@ -877,7 +891,13 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                 value={tab === "image" ? imagePrompt : videoPrompt}
               />
 
-              <div className={`grid gap-3 sm:grid-cols-2 ${tab === "video" ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
+              <div
+                className={`grid gap-3 sm:grid-cols-2 ${
+                  tab === "video" || getImageQualityOptions(imageModelId).length > 0
+                    ? "lg:grid-cols-5"
+                    : "lg:grid-cols-4"
+                }`}
+              >
                 <SelectField
                   label="Model"
                   options={tab === "image" ? imageModelOptions : videoModelOptions}
@@ -885,6 +905,10 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                   onChange={(value) => {
                     if (tab === "image") {
                       setImageModelId(value);
+                      const qualityOpts = getImageQualityOptions(value);
+                      if (qualityOpts.length > 0 && !qualityOpts.includes(imageQuality as ImageQuality)) {
+                        setImageQuality("medium");
+                      }
                     } else {
                       setVideoModelId(value);
                       setVideoReferences((current) => current.slice(0, getVideoMaxReferences(value)));
@@ -911,6 +935,14 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                     options={getVideoQualityOptions(videoModelId)}
                     value={videoQuality}
                     onChange={setVideoQuality}
+                  />
+                ) : getImageQualityOptions(imageModelId).length > 0 ? (
+                  <SelectField
+                    label="Quality"
+                    options={getImageQualityOptions(imageModelId)}
+                    value={imageQuality}
+                    onChange={setImageQuality}
+                    renderLabel={(value) => imageQualityLabels[value as ImageQuality] ?? value}
                   />
                 ) : null}
                 <SelectField

@@ -61,6 +61,7 @@ export async function POST(request: Request) {
           modelId: asString(formData.get("modelId")),
           aspectRatio: asString(formData.get("aspectRatio")),
           count: asString(formData.get("count")),
+          quality: asString(formData.get("quality")) || undefined,
         });
 
   if (!parsed.success) {
@@ -104,6 +105,7 @@ export async function POST(request: Request) {
               modelId: parsed.data.modelId,
               prompt: parsed.data.prompt,
               aspectRatio: parsed.data.aspectRatio,
+              quality: parsed.data.quality,
               referenceUrls,
             });
 

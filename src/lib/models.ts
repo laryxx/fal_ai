@@ -1,7 +1,28 @@
 import { z } from "zod";
 
 export type MediaKind = "image" | "video";
-export type ImageModelId = "nano-banana" | "nano-banana-pro" | "seedream-v4";
+export type ImageModelId =
+  | "nano-banana"
+  | "nano-banana-pro"
+  | "seedream-v4"
+  | "nano-banana-2.1"
+  | "wan-2.7"
+  | "wan-2.7-pro"
+  | "gpt-image-2.5-sunburst"
+  | "gpt-image-2.5-flare";
+
+const imageModelIds = [
+  "nano-banana",
+  "nano-banana-pro",
+  "seedream-v4",
+  "nano-banana-2.1",
+  "wan-2.7",
+  "wan-2.7-pro",
+  "gpt-image-2.5-sunburst",
+  "gpt-image-2.5-flare",
+] as const;
+
+export type ImageQuality = "low" | "medium" | "high" | "xhigh" | "max";
 export type VideoModelId =
   | "ltx-2.3-fast"
   | "veo-3"
@@ -42,6 +63,36 @@ export const imageModelOptions = [
     label: "Seedream V4",
     description: "ByteDance Seedream 4.0 for clean prompt following.",
     priceLabel: "$0.03 / image",
+  },
+  {
+    id: "nano-banana-2.1",
+    label: "Nano Banana 2.1",
+    description: "Google's next-gen flagship image model (1K).",
+    priceLabel: "$0.04 / image",
+  },
+  {
+    id: "wan-2.7",
+    label: "Wan 2.7",
+    description: "Alibaba Wan 2.7: strong posters, infographics and Chinese text; up to 4 references.",
+    priceLabel: "$0.03 / image",
+  },
+  {
+    id: "wan-2.7-pro",
+    label: "Wan 2.7 Pro",
+    description: "Wan 2.7 Pro: higher quality; up to 4 references.",
+    priceLabel: "$0.075 / image",
+  },
+  {
+    id: "gpt-image-2.5-sunburst",
+    label: "GPT Image 2.5 Sunburst",
+    description: "OpenAI: exceptional quality and precise edits (slower).",
+    priceLabel: "$0.004-0.21 / image (by quality)",
+  },
+  {
+    id: "gpt-image-2.5-flare",
+    label: "GPT Image 2.5 Flare",
+    description: "OpenAI: stunning everyday images, fast.",
+    priceLabel: "$0.004-0.21 / image (by quality)",
   },
 ] as const;
 
@@ -100,10 +151,57 @@ export const videoModelOptions = [
 export const imageGenerationSchema = z.object({
   kind: z.literal("image"),
   prompt: z.string().trim().min(8).max(10000),
-  modelId: z.enum(["nano-banana", "nano-banana-pro", "seedream-v4"]),
+  modelId: z.enum(imageModelIds),
   aspectRatio: z.enum(["1:1", "4:3", "3:4", "16:9", "9:16"]),
   count: z.coerce.number().int().min(1).max(4),
+  // Only used by GPT Image models.
+  quality: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
 });
+
+/** Quality levels a model offers (empty = the model has no quality setting). */
+export function getImageQualityOptions(modelId: string): ImageQuality[] {
+  if (modelId === "gpt-image-2.5-sunburst" || modelId === "gpt-image-2.5-flare") {
+    return ["low", "medium", "high", "xhigh", "max"];
+  }
+  return [];
+}
+
+export const imageQualityLabels: Record<ImageQuality, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+// fal's published per-image output prices (USD) for GPT Image 2.5, by quality, for
+// the two sizes the app uses: 1024x1024 (1:1) and 1024x768. 4:3, 3:4, 16:9 and
+// 9:16 presets are 1024x768 or smaller, so the 1024x768 price is used for them.
+// fal bills by tokens, so these are close estimates rather than exact charges.
+const gptImagePrices: Record<"square" | "other", Record<ImageQuality, number>> = {
+  square: { low: 0.00588, medium: 0.01317, high: 0.05268, xhigh: 0.09366, max: 0.21072 },
+  other: { low: 0.00402, medium: 0.00903, high: 0.03612, xhigh: 0.0642, max: 0.14445 },
+};
+
+// Approximate input cost of each reference image sent to a GPT Image edit (USD).
+const GPT_IMAGE_REFERENCE_COST = 0.008;
+
+function getFalImageSize(aspectRatio: AspectRatio) {
+  switch (aspectRatio) {
+    case "1:1":
+      return "square_hd";
+    case "4:3":
+      return "landscape_4_3";
+    case "3:4":
+      return "portrait_4_3";
+    case "16:9":
+      return "landscape_16_9";
+    case "9:16":
+      return "portrait_16_9";
+    default:
+      return "square_hd";
+  }
+}
 
 export const videoGenerationSchema = z.object({
   kind: z.literal("video"),
@@ -184,9 +282,89 @@ export function prepareImageRequest(args: {
   modelId: ImageModelId;
   prompt: string;
   aspectRatio: AspectRatio;
+  quality?: ImageQuality;
   referenceUrls: string[];
 }) {
   const hasReferences = args.referenceUrls.length > 0;
+  const toCents = (usd: number) => Math.round(usd * 100 * 1000) / 1000;
+
+  if (args.modelId === "gpt-image-2.5-sunburst" || args.modelId === "gpt-image-2.5-flare") {
+    const options = getImageQualityOptions(args.modelId);
+    const quality = args.quality && options.includes(args.quality) ? args.quality : "medium";
+    const sizeKey = args.aspectRatio === "1:1" ? "square" : "other";
+    const outputUsd = gptImagePrices[sizeKey][quality];
+    const usd = outputUsd + (hasReferences ? args.referenceUrls.length * GPT_IMAGE_REFERENCE_COST : 0);
+    const variant = args.modelId === "gpt-image-2.5-sunburst" ? "sunburst" : "flare";
+    const endpointId = `openai/gpt-image-2.5/${variant}/${hasReferences ? "edit" : "text-to-image"}`;
+    const input: Record<string, unknown> = {
+      prompt: args.prompt,
+      image_size: getFalImageSize(args.aspectRatio),
+      quality,
+      num_images: 1,
+      output_format: "png",
+    };
+    if (hasReferences) input.image_urls = args.referenceUrls;
+
+    return {
+      endpointId,
+      modelLabel: getModelLabel(args.modelId),
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: toCents(usd),
+      billingUnit: "image",
+      billableUnits: 1,
+      resolution: quality,
+      input,
+    };
+  }
+
+  if (args.modelId === "wan-2.7" || args.modelId === "wan-2.7-pro") {
+    const pro = args.modelId === "wan-2.7-pro";
+    if (args.referenceUrls.length > 4) {
+      throw new Error(`${pro ? "Wan 2.7 Pro" : "Wan 2.7"} accepts up to 4 reference images`);
+    }
+    const base = pro ? "fal-ai/wan/v2.7/pro" : "fal-ai/wan/v2.7";
+    const input: Record<string, unknown> = {
+      prompt: args.prompt,
+      image_size: getFalImageSize(args.aspectRatio),
+      num_images: 1,
+      output_format: "png",
+    };
+    if (hasReferences) input.image_urls = args.referenceUrls;
+
+    return {
+      endpointId: `${base}/${hasReferences ? "edit" : "text-to-image"}`,
+      modelLabel: pro ? "Wan 2.7 Pro" : "Wan 2.7",
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: pro ? 7.5 : 3,
+      billingUnit: "image",
+      billableUnits: 1,
+      resolution: getFalImageSize(args.aspectRatio),
+      input,
+    };
+  }
+
+  if (args.modelId === "nano-banana-2.1") {
+    // Token-billed; fal quotes about $0.040 per 1K image, plus ~$0.002 per input image.
+    const input: Record<string, unknown> = {
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      resolution: "1K",
+      num_images: 1,
+      output_format: "png",
+    };
+    if (hasReferences) input.image_urls = args.referenceUrls;
+
+    return {
+      endpointId: hasReferences ? "google/nano-banana-2.1/edit" : "google/nano-banana-2.1",
+      modelLabel: "Nano Banana 2.1",
+      modelFamily: args.modelId,
+      estimatedCostUsdCents: toCents(0.04 + args.referenceUrls.length * 0.002),
+      billingUnit: "image",
+      billableUnits: 1,
+      resolution: "1K",
+      input,
+    };
+  }
 
   if (args.modelId === "nano-banana") {
     return {
