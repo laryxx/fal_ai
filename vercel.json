@@ -2,7 +2,7 @@
   "framework": "nextjs",
   "functions": {
     "api/vmake.py": {
-      "maxDuration": 120,
+      "maxDuration": 300,
       "includeFiles": "api/_vendor/**"
     }
   }

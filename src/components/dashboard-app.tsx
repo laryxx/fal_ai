@@ -33,6 +33,15 @@ import {
   videoModelOptions,
 } from "@/lib/models";
 import type { AppData, CreativeSummary, MemberDetail } from "@/lib/types";
+import {
+  MAX_UPLOAD_VIDEO_BYTES,
+  type VideoResolution,
+  type VideoTier,
+} from "@/lib/vmake-options";
+import {
+  VideoEnhanceDialog,
+  type VideoEnhanceTarget,
+} from "@/components/video-enhance-dialog";
 
 type Tab = "image" | "video";
 type UploadPreview = {
@@ -98,6 +107,53 @@ function resolveCreativeAspectRatio(creative: CreativeSummary) {
     : options[0];
 }
 
+function readVideoMetadata(file: File) {
+  return new Promise<{ durationSeconds: number; width: number; height: number }>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        reject(new Error("Could not read this video's length. Try an MP4 or MOV file."));
+        return;
+      }
+      resolve({
+        durationSeconds: video.duration,
+        width: video.videoWidth,
+        height: video.videoHeight,
+      });
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("This browser can't read that video file. Try an MP4 or MOV file."));
+    };
+    video.src = url;
+  });
+}
+
+function putFileWithProgress(
+  url: string,
+  file: File,
+  contentType: string,
+  onProgress: (percent: number) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", contentType);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(`Upload failed (HTTP ${xhr.status})`));
+    xhr.onerror = () => reject(new Error("Upload failed. Check your connection and try again."));
+    xhr.send(file);
+  });
+}
+
 function formatVmakeCredits(credits: number) {
   return `${credits} Vmake credit${credits === 1 ? "" : "s"}`;
 }
@@ -148,6 +204,8 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [videoEnhanceTarget, setVideoEnhanceTarget] = useState<VideoEnhanceTarget | null>(null);
+  const [videoUploadProgress, setVideoUploadProgress] = useState<number | null>(null);
   const [imageReferences, setImageReferences] = useState<UploadPreview[]>([]);
   const [videoReferences, setVideoReferences] = useState<UploadPreview[]>([]);
   const currentYear = new Date().getFullYear();
@@ -373,7 +431,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       const response = await fetch("/api/enhance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ creativeId: creative.id }),
+        body: JSON.stringify({ kind: "image", creativeId: creative.id }),
       });
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
 
@@ -388,6 +446,103 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
       setMessage(error instanceof Error ? error.message : "Request failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function confirmVideoEnhance(tier: VideoTier, resolution: VideoResolution) {
+    const target = videoEnhanceTarget;
+    if (!target) return;
+    setBusy(true);
+    setMessage(null);
+
+    try {
+      const body =
+        target.type === "creative"
+          ? { kind: "video", creativeId: target.creativeId, tier, resolution }
+          : {
+              kind: "video",
+              tier,
+              resolution,
+              upload: {
+                url: target.url,
+                fileName: target.fileName,
+                durationSeconds: target.durationSeconds,
+                width: target.width || undefined,
+                height: target.height || undefined,
+              },
+            };
+      const response = await fetch("/api/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        credits?: number;
+      };
+
+      if (!response.ok) {
+        setMessage(payload.error ?? "Could not start the video enhancement");
+        return;
+      }
+
+      setVideoEnhanceTarget(null);
+      setMessage(
+        `Enhancing video with Vmake (${payload.credits ?? "?"} credits). Larger outputs can take several minutes.`,
+      );
+      await refreshData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadVideoForEnhancement(file: File) {
+    setMessage(null);
+
+    if (file.size > MAX_UPLOAD_VIDEO_BYTES) {
+      setMessage(
+        `That video is ${Math.round(file.size / 1024 / 1024)} MB; the limit is ${Math.round(
+          MAX_UPLOAD_VIDEO_BYTES / 1024 / 1024,
+        )} MB.`,
+      );
+      return;
+    }
+
+    try {
+      const metadata = await readVideoMetadata(file);
+      const contentType = file.type || "video/mp4";
+      setVideoUploadProgress(0);
+
+      const presign = await fetch("/api/upload/reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name || "video.mp4", contentType, purpose: "video" }),
+      });
+      const presignPayload = (await presign.json().catch(() => ({}))) as {
+        presignedUrl?: string;
+        publicUrl?: string;
+        error?: string;
+      };
+      if (!presign.ok || !presignPayload.presignedUrl || !presignPayload.publicUrl) {
+        throw new Error(presignPayload.error ?? "Could not start the upload");
+      }
+
+      await putFileWithProgress(presignPayload.presignedUrl, file, contentType, setVideoUploadProgress);
+
+      setVideoEnhanceTarget({
+        type: "upload",
+        url: presignPayload.publicUrl,
+        fileName: file.name || "video.mp4",
+        durationSeconds: metadata.durationSeconds,
+        width: metadata.width,
+        height: metadata.height,
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed");
+    } finally {
+      setVideoUploadProgress(null);
     }
   }
 
@@ -1119,9 +1274,34 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
         <section>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-base font-semibold tracking-tight">Gallery</h2>
-            <span className="font-mono text-xs text-[#5c5c66]">
-              {snapshot.creatives.length} recent
-            </span>
+            <div className="flex items-center gap-3">
+              {data.vmakeEnabled ? (
+                <label
+                  className={`inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] ${
+                    busy || videoUploadProgress !== null ? "pointer-events-none opacity-40" : "cursor-pointer"
+                  }`}
+                  title="Upload your own video and enhance it with Vmake"
+                >
+                  <Upload className="size-3.5" />
+                  {videoUploadProgress !== null
+                    ? `Uploading video... ${videoUploadProgress}%`
+                    : "Enhance a video file"}
+                  <input
+                    accept="video/*"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void uploadVideoForEnhancement(file);
+                    }}
+                    type="file"
+                  />
+                </label>
+              ) : null}
+              <span className="font-mono text-xs text-[#5c5c66]">
+                {snapshot.creatives.length} recent
+              </span>
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -1249,6 +1429,32 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         Enhance
                       </button>
                     ) : null}
+                    {data.vmakeEnabled &&
+                    creative.kind === "video" &&
+                    creative.status === "completed" &&
+                    creative.provider !== "vmake" ? (
+                      <button
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={busy || !creative.durationSeconds}
+                        onClick={() =>
+                          setVideoEnhanceTarget({
+                            type: "creative",
+                            creativeId: creative.id,
+                            title: `${creative.modelLabel} video`,
+                            durationSeconds: creative.durationSeconds ?? 0,
+                          })
+                        }
+                        title={
+                          creative.durationSeconds
+                            ? "Enhance and upscale with Vmake (2K / 4K / 8K)"
+                            : "This video's length is unknown"
+                        }
+                        type="button"
+                      >
+                        <Wand2 className="size-3.5" />
+                        Enhance
+                      </button>
+                    ) : null}
                     {creative.outputUrl ? (
                       <a
                         className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef]"
@@ -1266,6 +1472,14 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
           </div>
         </section>
       </main>
+      {videoEnhanceTarget ? (
+        <VideoEnhanceDialog
+          busy={busy}
+          onCancel={() => setVideoEnhanceTarget(null)}
+          onConfirm={(tier, resolution) => void confirmVideoEnhance(tier, resolution)}
+          target={videoEnhanceTarget}
+        />
+      ) : null}
     </div>
   );
 }

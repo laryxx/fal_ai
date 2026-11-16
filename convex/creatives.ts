@@ -2,6 +2,7 @@ import {
   mutationGeneric as mutation,
   queryGeneric as query,
 } from "convex/server";
+import type { GenericId as Id } from "convex/values";
 import { v } from "convex/values";
 import { assertServerSecret, getUserById } from "./lib";
 
@@ -140,13 +141,26 @@ export const createEnhancement = mutation({
   args: {
     serverSecret: v.string(),
     userId: v.id("users"),
-    sourceCreativeId: v.id("creatives"),
+    kind: v.union(v.literal("image"), v.literal("video")),
+    // Either a gallery creative to enhance...
+    sourceCreativeId: v.optional(v.id("creatives")),
+    // ...or a file the user uploaded to R2 (already validated by the caller).
+    upload: v.optional(
+      v.object({
+        url: v.string(),
+        fileName: v.string(),
+        aspectRatio: v.string(),
+        durationSeconds: v.optional(v.number()),
+      }),
+    ),
     modelFamily: v.string(),
     modelLabel: v.string(),
     endpointId: v.string(),
     resolution: v.string(),
     estimatedCostUsdCents: v.number(),
     vmakeCredits: v.number(),
+    billableUnits: v.number(),
+    billingUnit: v.string(),
   },
   handler: async (ctx, args) => {
     assertServerSecret(args.serverSecret);
@@ -156,42 +170,109 @@ export const createEnhancement = mutation({
       throw new Error("User not found");
     }
 
-    const source = await ctx.db.get(args.sourceCreativeId);
-    if (!source || (source.userId !== args.userId && user.role !== "admin")) {
-      throw new Error("Image not found");
-    }
-    if (source.kind !== "image" || source.status !== "completed" || !source.outputUrl) {
-      throw new Error("Only finished images can be enhanced");
-    }
-    if (source.provider === "vmake") {
-      throw new Error("This image is already enhanced");
+    let prompt: string;
+    let aspectRatio: string;
+    let durationSeconds: number | undefined;
+    let sourceUrl: string;
+    let referenceAssetIds: Id<"assets">[] = [];
+
+    if (args.sourceCreativeId) {
+      const source = await ctx.db.get(args.sourceCreativeId);
+      if (!source || (source.userId !== args.userId && user.role !== "admin")) {
+        throw new Error("Creative not found");
+      }
+      if (source.kind !== args.kind || source.status !== "completed" || !source.outputUrl) {
+        throw new Error(`Only finished ${args.kind}s can be enhanced`);
+      }
+      if (source.provider === "vmake") {
+        throw new Error(`This ${args.kind} is already enhanced`);
+      }
+      prompt = source.prompt;
+      aspectRatio = source.aspectRatio;
+      durationSeconds = source.durationSeconds;
+      sourceUrl = source.outputUrl;
+      referenceAssetIds = source.outputAssetId ? [source.outputAssetId] : [];
+    } else if (args.upload) {
+      prompt = `Uploaded file: ${args.upload.fileName}`;
+      aspectRatio = args.upload.aspectRatio;
+      durationSeconds = args.upload.durationSeconds;
+      sourceUrl = args.upload.url;
+    } else {
+      throw new Error("Nothing to enhance");
     }
 
     const now = Date.now();
     const creativeId = await ctx.db.insert("creatives", {
       userId: args.userId,
-      batchId: `enhance-${args.sourceCreativeId}-${now}`,
-      kind: "image",
+      batchId: `enhance-${args.sourceCreativeId ?? "upload"}-${now}`,
+      kind: args.kind,
       status: "processing",
       provider: "vmake",
       modelFamily: args.modelFamily,
       modelLabel: args.modelLabel,
       endpointId: args.endpointId,
-      prompt: source.prompt,
-      aspectRatio: source.aspectRatio,
+      prompt,
+      aspectRatio,
       position: 1,
-      referenceAssetIds: source.outputAssetId ? [source.outputAssetId] : [],
+      referenceAssetIds,
+      durationSeconds,
       resolution: args.resolution,
       estimatedCostUsdCents: args.estimatedCostUsdCents,
-      billableUnits: 1,
-      billingUnit: "image",
+      billableUnits: args.billableUnits,
+      billingUnit: args.billingUnit,
       vmakeCredits: args.vmakeCredits,
       sourceCreativeId: args.sourceCreativeId,
       createdAt: now,
       updatedAt: now,
     });
 
-    return { creativeId, sourceUrl: source.outputUrl };
+    return { creativeId, sourceUrl };
+  },
+});
+
+export const getCreativeForEnhancement = query({
+  args: {
+    serverSecret: v.string(),
+    userId: v.id("users"),
+    creativeId: v.id("creatives"),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const user = await getUserById(ctx, args.userId);
+    const creative = await ctx.db.get(args.creativeId);
+    if (!user || !creative || (creative.userId !== args.userId && user.role !== "admin")) {
+      return null;
+    }
+    return {
+      kind: creative.kind,
+      status: creative.status,
+      provider: creative.provider ?? "fal",
+      durationSeconds: creative.durationSeconds ?? null,
+    };
+  },
+});
+
+export const claimVmakeCompletion = mutation({
+  args: {
+    serverSecret: v.string(),
+    creativeId: v.id("creatives"),
+  },
+  handler: async (ctx, args) => {
+    assertServerSecret(args.serverSecret);
+
+    const creative = await ctx.db.get(args.creativeId);
+    if (!creative || creative.status === "completed" || creative.status === "failed") {
+      return false;
+    }
+    const now = Date.now();
+    // Another request is already copying this result; let it finish (copies of
+    // large videos can take a few minutes).
+    if (creative.providerClaimedAt && now - creative.providerClaimedAt < 5 * 60 * 1000) {
+      return false;
+    }
+    await ctx.db.patch(args.creativeId, { providerClaimedAt: now, updatedAt: now });
+    return true;
   },
 });
 

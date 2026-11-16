@@ -5,7 +5,7 @@ Next.js app can call it over HTTP. Only the Next.js server should call this:
 every request must carry the shared APP_SERVER_SECRET in `x-app-secret`.
 
 POST /api/vmake
-  {"action": "enhance", "imageUrl": "https://<R2 public URL>"}
+  {"action": "enhance", "mediaUrl": "https://<R2 public URL>", "task": "SKM0004"}
   {"action": "status",  "taskId": "t_..."}
 
 Response (always JSON):
@@ -38,9 +38,16 @@ from action_api_sdk import (  # noqa: E402
     WapiApiError,
 )
 
-# "Fast 2K - Image Quality Repair", the only image enhancement task in the
-# Vmake catalog (checked 2026-11-12). Costs 10 credits per image.
-ENHANCE_TASK = os.environ.get("VMAKE_ENHANCE_TASK", "SKM0004")
+# Vmake catalog ids (checked 2026-11-16) that the app may run.
+# SKM0004 = Fast 2K image repair; the rest are video quality repair
+# (Fast 2K/4K, Quality 2K/4K/8K, Master 2K/4K/8K).
+ALLOWED_TASKS = {
+    "SKM0004",
+    "SKM0001", "SKM0011",
+    "SKM0008", "SKM0009", "SKM0010",
+    "SKM0012", "SKM0013", "SKM0014",
+}
+DEFAULT_TASK = "SKM0004"
 SUCCESS_STATUS = 10
 FINISHED_STATUSES = {2, 10, 20}  # what the SDK treats as "finished"
 MAX_BODY_BYTES = 64 * 1024
@@ -62,7 +69,10 @@ def _summarize(res):
     status = data.get("status")
     result = data.get("result") or {}
     task_id = str(data.get("task_id") or result.get("id") or "")
-    urls = result.get("urls") or result.get("images") or []
+    urls = result.get("urls") or result.get("images") or result.get("videos") or []
+    if not urls:
+        media_list = result.get("media_info_list") or (result.get("data") or {}).get("media_info_list") or []
+        urls = [m.get("media_data") for m in media_list if isinstance(m, dict) and m.get("media_data")]
 
     if status == SUCCESS_STATUS and urls:
         info = (result.get("media_info") or [{}])[0] or {}
@@ -73,6 +83,7 @@ def _summarize(res):
             "width": info.get("width"),
             "height": info.get("height"),
             "sizeBytes": info.get("fileSize"),
+            "durationSeconds": info.get("duration") or None,
         }
 
     if status in FINISHED_STATUSES:
@@ -82,13 +93,13 @@ def _summarize(res):
     return {"status": "processing", "taskId": task_id}
 
 
-def _enhance(image_url):
+def _enhance(media_url, task):
     client = SkillClient()
     # The SDK's own status poll waits up to an hour, which no serverless
     # function survives. If Vmake queues the job, return its id instead and
     # let the app's sync route check on it later.
     client.api.status = lambda task_id, policy: {"__queued__": str(task_id)}
-    res = client.run_task(ENHANCE_TASK, image_url)
+    res = client.run_task(task, media_url)
     if isinstance(res, dict) and "__queued__" in res:
         return {"status": "processing", "taskId": res["__queued__"]}
     return _summarize(res)
@@ -106,7 +117,7 @@ def _status(task_id):
     return _summarize(checked.get("result"))
 
 
-def _allowed_image_url(url):
+def _allowed_media_url(url):
     if not isinstance(url, str) or not url.startswith("https://"):
         return False
     base = (os.environ.get("R2_PUBLIC_BASE_URL") or "").rstrip("/")
@@ -123,10 +134,13 @@ def handle(payload):
     action = payload.get("action")
     try:
         if action == "enhance":
-            image_url = payload.get("imageUrl")
-            if not _allowed_image_url(image_url):
-                return 400, {"status": "failed", "error": "Image URL is not allowed"}
-            return 200, _enhance(image_url)
+            media_url = payload.get("mediaUrl") or payload.get("imageUrl")
+            task = str(payload.get("task") or DEFAULT_TASK)
+            if task not in ALLOWED_TASKS:
+                return 400, {"status": "failed", "error": "Unknown Vmake task"}
+            if not _allowed_media_url(media_url):
+                return 400, {"status": "failed", "error": "Media URL is not allowed"}
+            return 200, _enhance(media_url, task)
 
         if action == "status":
             task_id = str(payload.get("taskId") or "").strip()
@@ -196,5 +210,5 @@ def _load_local_env():
 if __name__ == "__main__":
     _load_local_env()
     port = int(os.environ.get("VMAKE_DEV_PORT", "8787"))
-    print(f"Vmake dev service on http://127.0.0.1:{port} (task {ENHANCE_TASK})")
+    print(f"Vmake dev service on http://127.0.0.1:{port}")
     HTTPServer(("127.0.0.1", port), handler).serve_forever()

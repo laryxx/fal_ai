@@ -1,29 +1,22 @@
+import { Readable } from "node:stream";
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { getServerEnv } from "@/lib/env";
 import {
+  convexClaimVmakeCompletion,
   convexCompleteCreative,
   convexMarkCreativeFailed,
   convexSetProviderTaskId,
 } from "@/lib/convex";
-import { uploadToR2 } from "@/lib/r2";
+import { uploadStreamToR2, uploadToR2 } from "@/lib/r2";
 
-// Vmake "Fast 2K - Image Quality Repair" (catalog id SKM0004): 10 credits per image.
-// Dollar cost assumes the Pro plan: $29.99 for 4,500 credits a month.
-const VMAKE_PLAN_PRICE_USD_CENTS = 2999;
-const VMAKE_PLAN_CREDITS = 4500;
-const ENHANCE_CREDITS = 10;
-
-export const vmakeEnhance = {
-  modelFamily: "vmake-enhance",
-  modelLabel: "Vmake Enhance",
-  endpointId: "vmake/SKM0004",
-  resolution: "Fast 2K",
-  vmakeCredits: ENHANCE_CREDITS,
-  estimatedCostUsdCents:
-    Math.round(((ENHANCE_CREDITS * VMAKE_PLAN_PRICE_USD_CENTS) / VMAKE_PLAN_CREDITS) * 100) / 100,
-};
-
-// How long an enhancement may stay unfinished before the sync route gives up on it.
-export const VMAKE_STALE_AFTER_MS = 10 * 60 * 1000;
+/** How long an unfinished Vmake job may run before the sync route gives up on it. */
+export function getVmakeStaleAfterMs(kind: "image" | "video", hasTaskId: boolean) {
+  // Without a task id the enhance request itself is still talking to Vmake;
+  // that request is capped at 5 minutes, so anything older died.
+  if (!hasTaskId) return 10 * 60 * 1000;
+  // 4K/8K video restoration can take a long time on Vmake's side.
+  return kind === "video" ? 3 * 60 * 60 * 1000 : 30 * 60 * 1000;
+}
 
 export function isVmakeConfigured() {
   return Boolean(process.env.MT_AK && process.env.MT_SK);
@@ -37,14 +30,15 @@ export type VmakeServiceResult =
       width?: number | null;
       height?: number | null;
       sizeBytes?: number | null;
+      durationSeconds?: number | null;
     }
   | { status: "processing"; taskId?: string }
   | { status: "failed"; taskId?: string; error: string };
 
-/** Call the Python service in api/vmake.py (or VMAKE_SERVICE_URL in local dev). */
+/** Call the Python service in api/vmake.py (VMAKE_SERVICE_URL, or this site's /api/vmake). */
 export async function callVmakeService(
   origin: string,
-  body: { action: "enhance"; imageUrl: string } | { action: "status"; taskId: string },
+  body: { action: "enhance"; mediaUrl: string; task: string } | { action: "status"; taskId: string },
 ): Promise<VmakeServiceResult> {
   const url = process.env.VMAKE_SERVICE_URL || `${origin}/api/vmake`;
   const response = await fetch(url, {
@@ -55,7 +49,7 @@ export async function callVmakeService(
     },
     body: JSON.stringify(body),
     cache: "no-store",
-    signal: AbortSignal.timeout(110_000),
+    signal: AbortSignal.timeout(290_000),
   });
 
   let payload: Partial<VmakeServiceResult> & { error?: string } = {};
@@ -72,14 +66,20 @@ export async function callVmakeService(
   throw new Error(payload.error ?? `Vmake service returned HTTP ${response.status}`);
 }
 
-function getFileName(url: string) {
+function getFileName(url: string, kind: "image" | "video") {
   const last = new URL(url).pathname.split("/").filter(Boolean).pop();
-  return last || "enhanced.jpeg";
+  return last || (kind === "video" ? "enhanced.mp4" : "enhanced.jpeg");
 }
 
-/** Store a Vmake result on the creative: copy finished images into R2, remember queued task ids. */
+/** Store a Vmake result on the creative: copy finished media into R2, remember queued task ids. */
 export async function applyVmakeResult(
-  creative: { _id: string; userId: string; estimatedCostUsdCents: number },
+  creative: {
+    _id: string;
+    userId: string;
+    kind: "image" | "video";
+    estimatedCostUsdCents: number;
+    durationSeconds?: number | null;
+  },
   result: VmakeServiceResult,
 ) {
   if (result.status === "processing") {
@@ -94,22 +94,41 @@ export async function applyVmakeResult(
     return;
   }
 
-  // Vmake's result link expires after 7 days, so keep our own copy in R2.
-  const source = await fetch(result.outputUrl, { cache: "no-store" });
-  if (!source.ok) {
-    await convexMarkCreativeFailed(creative._id, "Could not download the enhanced image from Vmake");
+  // Only one request may copy a finished result (the gallery syncs every few seconds).
+  if (!(await convexClaimVmakeCompletion(creative._id))) {
     return;
   }
 
-  const contentType = source.headers.get("content-type") || "image/jpeg";
-  const buffer = Buffer.from(await source.arrayBuffer());
-  const fileName = getFileName(result.outputUrl);
-  const uploaded = await uploadToR2({
-    keyPrefix: `outputs/${creative.userId}/image`,
-    fileName,
-    body: buffer,
-    contentType,
-  });
+  // Vmake's result link expires after 7 days, so keep our own copy in R2.
+  const source = await fetch(result.outputUrl, { cache: "no-store" });
+  if (!source.ok || !source.body) {
+    await convexMarkCreativeFailed(creative._id, `Could not download the enhanced ${creative.kind} from Vmake`);
+    return;
+  }
+
+  const contentType =
+    source.headers.get("content-type") || (creative.kind === "video" ? "video/mp4" : "image/jpeg");
+  const fileName = getFileName(result.outputUrl, creative.kind);
+  const keyPrefix = `outputs/${creative.userId}/${creative.kind}`;
+  const contentLength = Number(source.headers.get("content-length") || 0);
+
+  let uploaded: { bucket: string; key: string; publicUrl: string };
+  let sizeBytes: number;
+  if (contentLength > 0) {
+    // Stream large files (4K/8K video) straight through instead of holding them in memory.
+    uploaded = await uploadStreamToR2({
+      keyPrefix,
+      fileName,
+      body: Readable.fromWeb(source.body as unknown as NodeWebReadableStream<Uint8Array>),
+      contentLength,
+      contentType,
+    });
+    sizeBytes = contentLength;
+  } else {
+    const buffer = Buffer.from(await source.arrayBuffer());
+    uploaded = await uploadToR2({ keyPrefix, fileName, body: buffer, contentType });
+    sizeBytes = buffer.byteLength;
+  }
 
   await convexCompleteCreative({
     creativeId: creative._id,
@@ -120,9 +139,13 @@ export async function applyVmakeResult(
       sourceUrl: result.outputUrl.split("?")[0],
       contentType,
       fileName,
-      sizeBytes: buffer.byteLength,
+      sizeBytes,
       width: result.width ?? undefined,
       height: result.height ?? undefined,
+      durationSeconds:
+        creative.kind === "video"
+          ? (result.durationSeconds ?? creative.durationSeconds ?? undefined)
+          : undefined,
     },
     actualCostUsdCents: creative.estimatedCostUsdCents,
     outputUrl: uploaded.publicUrl,

@@ -8,6 +8,8 @@ import { createPresignedUploadUrl } from "@/lib/r2";
 const schema = z.object({
   fileName: z.string().min(1).max(255),
   contentType: z.string().min(1),
+  // "reference" = reference image for generation; "video" = a video to enhance.
+  purpose: z.enum(["reference", "video"]).optional(),
 });
 
 export async function POST(request: Request) {
@@ -30,9 +32,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
+  const purpose = parsed.data.purpose ?? "reference";
+  if (purpose === "video" && !parsed.data.contentType.startsWith("video/")) {
+    return NextResponse.json({ error: "Only video files can be enhanced" }, { status: 400 });
+  }
+
   const env = getServerEnv();
   const sanitized = parsed.data.fileName.replace(/[^a-zA-Z0-9._-]/g, "-");
-  const key = `references/${user._id}/${crypto.randomUUID()}-${sanitized}`;
+  const folder = purpose === "video" ? "uploads" : "references";
+  const key = `${folder}/${user._id}/${crypto.randomUUID()}-${sanitized}`;
 
   const presignedUrl = await createPresignedUploadUrl({
     key,

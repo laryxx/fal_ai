@@ -12,8 +12,11 @@ import { uploadToR2 } from "@/lib/r2";
 import {
   applyVmakeResult,
   callVmakeService,
-  VMAKE_STALE_AFTER_MS,
+  getVmakeStaleAfterMs,
 } from "@/lib/vmake";
+
+// Copying a finished 4K/8K video from Vmake into R2 can take a while.
+export const maxDuration = 300;
 
 type FalMediaFile = {
   url: string;
@@ -46,12 +49,16 @@ async function syncVmakeCreative(
   creative: {
     _id: string;
     userId: string;
+    kind: "image" | "video";
     createdAt: number;
     estimatedCostUsdCents: number;
+    durationSeconds?: number;
     providerTaskId?: string;
   },
 ) {
-  const stale = Date.now() - creative.createdAt > VMAKE_STALE_AFTER_MS;
+  const stale =
+    Date.now() - creative.createdAt >
+    getVmakeStaleAfterMs(creative.kind, Boolean(creative.providerTaskId));
 
   // Without a task id the enhance route is still waiting on Vmake (it usually
   // finishes within seconds). Only step in if that request evidently died.

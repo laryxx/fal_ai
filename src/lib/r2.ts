@@ -1,5 +1,6 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { Readable } from "node:stream";
 import { getServerEnv } from "@/lib/env";
 
 function getClient() {
@@ -53,6 +54,42 @@ export async function uploadToR2(args: {
     key,
     publicUrl: `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`,
   };
+}
+
+/** Upload a stream of known length without buffering it (used for large videos). */
+export async function uploadStreamToR2(args: {
+  keyPrefix: string;
+  fileName: string;
+  body: Readable;
+  contentLength: number;
+  contentType?: string;
+}) {
+  const env = getServerEnv();
+  const key = `${args.keyPrefix}/${crypto.randomUUID()}-${sanitizeFileName(
+    args.fileName,
+  )}`;
+
+  await getClient().send(
+    new PutObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: key,
+      Body: args.body,
+      ContentLength: args.contentLength,
+      ContentType: args.contentType,
+    }),
+  );
+
+  return {
+    bucket: env.R2_BUCKET_NAME,
+    key,
+    publicUrl: `${env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`,
+  };
+}
+
+/** True when the URL points at an object under the given key prefix in our public R2 bucket. */
+export function isOwnR2Url(url: string, keyPrefix: string) {
+  const baseUrl = getServerEnv().R2_PUBLIC_BASE_URL.replace(/\/$/, "");
+  return url.startsWith(`${baseUrl}/${keyPrefix}`) && !url.includes("..");
 }
 
 export async function createPresignedUploadUrl(args: {

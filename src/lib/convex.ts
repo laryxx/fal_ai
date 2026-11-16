@@ -128,16 +128,38 @@ export async function convexCompleteCreative(args: Record<string, unknown>) {
 
 export async function convexCreateEnhancement(args: {
   userId: string;
-  sourceCreativeId: string;
+  kind: "image" | "video";
+  sourceCreativeId?: string;
+  upload?: { url: string; fileName: string; aspectRatio: string; durationSeconds?: number };
   modelFamily: string;
   modelLabel: string;
   endpointId: string;
   resolution: string;
   estimatedCostUsdCents: number;
   vmakeCredits: number;
+  billableUnits: number;
+  billingUnit: string;
 }): Promise<{ creativeId: string; sourceUrl: string }> {
   const client = getClient();
   return await client.mutation(anyApi.creatives.createEnhancement, withServerSecret(args));
+}
+
+export async function convexGetCreativeForEnhancement(
+  userId: string,
+  creativeId: string,
+): Promise<{
+  kind: "image" | "video";
+  status: string;
+  provider: string;
+  durationSeconds: number | null;
+} | null> {
+  const client = getClient();
+  return await client.query(anyApi.creatives.getCreativeForEnhancement, withServerSecret({ userId, creativeId }));
+}
+
+export async function convexClaimVmakeCompletion(creativeId: string): Promise<boolean> {
+  const client = getClient();
+  return await client.mutation(anyApi.creatives.claimVmakeCompletion, withServerSecret({ creativeId }));
 }
 
 export async function convexSetProviderTaskId(creativeId: string, providerTaskId: string) {

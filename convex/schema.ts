@@ -92,6 +92,8 @@ export default defineSchema({
     vmakeCredits: v.optional(v.number()),
     // For enhancements: the creative whose image was enhanced.
     sourceCreativeId: v.optional(v.id("creatives")),
+    // When a sync request started copying a finished Vmake result (prevents double copies).
+    providerClaimedAt: v.optional(v.number()),
   })
     .index("by_user_createdAt", ["userId", "createdAt"])
     .index("by_createdAt", ["createdAt"])
