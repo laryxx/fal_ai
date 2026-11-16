@@ -36,8 +36,10 @@ import {
 import type { AppData, CreativeSummary, MemberDetail } from "@/lib/types";
 import {
   imageEnhanceOption,
+  exceedsVmakeLimit,
   imageRemoveOption,
   isVmakeOutputOf,
+  VMAKE_MAX_DIMENSION,
   MAX_UPLOAD_IMAGE_BYTES,
   MAX_UPLOAD_VIDEO_BYTES,
   type VmakeOperation,
@@ -173,6 +175,14 @@ function putFileWithProgress(
     xhr.onerror = () => reject(new Error("Upload failed. Check your connection and try again."));
     xhr.send(file);
   });
+}
+
+function vmakeTooLargeReason(creative: CreativeSummary) {
+  const width = creative.asset?.width;
+  const height = creative.asset?.height;
+  return exceedsVmakeLimit(width, height)
+    ? `Too large for Vmake: ${width} × ${height} px (maximum ${VMAKE_MAX_DIMENSION} × ${VMAKE_MAX_DIMENSION})`
+    : null;
 }
 
 function formatVmakeCredits(credits: number) {
@@ -546,6 +556,12 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
     try {
       const metadata =
         kind === "video" ? await readVideoMetadata(file) : { ...(await readImageMetadata(file)), durationSeconds: undefined };
+      if (exceedsVmakeLimit(metadata.width, metadata.height)) {
+        setMessage(
+          `That ${kind} is ${metadata.width} × ${metadata.height} pixels; Vmake accepts up to ${VMAKE_MAX_DIMENSION} × ${VMAKE_MAX_DIMENSION}.`,
+        );
+        return;
+      }
       const contentType = file.type;
       const fileName = file.name || (kind === "video" ? "video.mp4" : "image.png");
       setMediaUploadProgress(0);
@@ -1458,9 +1474,12 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         {!isVmakeOutputOf(creative.modelFamily, "enhance") ? (
                           <button
                             className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={busy}
+                            disabled={busy || Boolean(vmakeTooLargeReason(creative))}
                             onClick={() => runImageJob(creative, "enhance")}
-                            title={`Sharpen and upscale with Vmake (${imageEnhanceOption.credits} credits)`}
+                            title={
+                              vmakeTooLargeReason(creative) ??
+                              `Sharpen and upscale with Vmake (${imageEnhanceOption.credits} credits)`
+                            }
                             type="button"
                           >
                             <Wand2 className="size-3.5" />
@@ -1470,9 +1489,12 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                         {!isVmakeOutputOf(creative.modelFamily, "remove") ? (
                           <button
                             className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={busy}
+                            disabled={busy || Boolean(vmakeTooLargeReason(creative))}
                             onClick={() => runImageJob(creative, "remove")}
-                            title={`Remove watermarks, logos and overlaid text with Vmake (${imageRemoveOption.credits} credits)`}
+                            title={
+                              vmakeTooLargeReason(creative) ??
+                              `Remove watermarks, logos and overlaid text with Vmake (${imageRemoveOption.credits} credits)`
+                            }
                             type="button"
                           >
                             <Eraser className="size-3.5" />
@@ -1489,7 +1511,7 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                             <button
                               key={operation}
                               className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-[#9898a0] transition hover:border-white/[0.12] hover:text-[#ededef] disabled:cursor-not-allowed disabled:opacity-40"
-                              disabled={busy || !creative.durationSeconds}
+                              disabled={busy || !creative.durationSeconds || Boolean(vmakeTooLargeReason(creative))}
                               onClick={() =>
                                 setVmakeDialog({
                                   operation,
@@ -1503,11 +1525,12 @@ export function DashboardApp({ initialData }: { initialData: AppData }) {
                                 })
                               }
                               title={
-                                !creative.durationSeconds
+                                vmakeTooLargeReason(creative) ??
+                                (!creative.durationSeconds
                                   ? "This video's length is unknown"
                                   : operation === "enhance"
                                     ? "Enhance and upscale with Vmake (2K / 4K / 8K)"
-                                    : "Remove watermarks, subtitles or objects with Vmake"
+                                    : "Remove watermarks, subtitles or objects with Vmake")
                               }
                               type="button"
                             >

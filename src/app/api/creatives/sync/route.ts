@@ -12,6 +12,7 @@ import { uploadToR2 } from "@/lib/r2";
 import {
   applyVmakeResult,
   callVmakeService,
+  friendlyVmakeError,
   getVmakeStaleAfterMs,
 } from "@/lib/vmake";
 
@@ -64,7 +65,7 @@ async function syncVmakeCreative(
   // finishes within seconds). Only step in if that request evidently died.
   if (!creative.providerTaskId) {
     if (stale) {
-      await convexMarkCreativeFailed(creative._id, "Vmake enhancement timed out");
+      await convexMarkCreativeFailed(creative._id, "Vmake did not finish this job in time");
     }
     return false;
   }
@@ -75,7 +76,7 @@ async function syncVmakeCreative(
       taskId: creative.providerTaskId,
     });
     if (result.status === "processing" && stale) {
-      await convexMarkCreativeFailed(creative._id, "Vmake enhancement timed out");
+      await convexMarkCreativeFailed(creative._id, "Vmake did not finish this job in time");
       return false;
     }
     await applyVmakeResult(creative, result);
@@ -85,7 +86,7 @@ async function syncVmakeCreative(
     if (stale) {
       await convexMarkCreativeFailed(
         creative._id,
-        error instanceof Error ? error.message : "Vmake enhancement failed",
+        error instanceof Error ? friendlyVmakeError(error.message, creative.kind) : "Vmake job failed",
       );
     }
     return false;

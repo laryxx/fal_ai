@@ -12,14 +12,17 @@ import { isOwnR2Url } from "@/lib/r2";
 import {
   applyVmakeResult,
   callVmakeService,
+  friendlyVmakeError,
   isVmakeConfigured,
 } from "@/lib/vmake";
 import {
   creditsToUsdCents,
+  exceedsVmakeLimit,
   getVideoEnhanceQuote,
   getVideoRemoveQuote,
   imageEnhanceOption,
   imageRemoveOption,
+  VMAKE_MAX_DIMENSION,
   vmakeLabels,
 } from "@/lib/vmake-options";
 
@@ -101,6 +104,8 @@ export async function POST(request: Request) {
 
   // ---- What is being processed ----
   let durationSeconds: number | undefined;
+  let width: number | null | undefined;
+  let height: number | null | undefined;
   let upload:
     | { url: string; fileName: string; aspectRatio: string; durationSeconds?: number }
     | undefined;
@@ -110,6 +115,8 @@ export async function POST(request: Request) {
       return badRequest("Upload not found");
     }
     durationSeconds = input.upload.durationSeconds;
+    width = input.upload.width;
+    height = input.upload.height;
     upload = {
       url: input.upload.url,
       fileName: input.upload.fileName,
@@ -122,8 +129,16 @@ export async function POST(request: Request) {
       return badRequest("Creative not found");
     }
     durationSeconds = source.durationSeconds ?? undefined;
+    width = source.width;
+    height = source.height;
   } else {
     return badRequest("Nothing to process");
+  }
+
+  if (exceedsVmakeLimit(width, height)) {
+    return badRequest(
+      `This ${kind} is ${width} × ${height} pixels; Vmake accepts up to ${VMAKE_MAX_DIMENSION} × ${VMAKE_MAX_DIMENSION}. Enhanced files are usually bigger than that, so remove watermarks before enhancing.`,
+    );
   }
 
   if (kind === "video" && !durationSeconds) {
@@ -214,7 +229,7 @@ export async function POST(request: Request) {
     } catch (error) {
       await convexMarkCreativeFailed(
         created.creativeId,
-        error instanceof Error ? error.message : "Vmake job failed",
+        error instanceof Error ? friendlyVmakeError(error.message, kind) : "Vmake job failed",
       );
     }
   });

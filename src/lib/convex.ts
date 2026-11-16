@@ -152,6 +152,8 @@ export async function convexGetCreativeForEnhancement(
   status: string;
   provider: string;
   durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
 } | null> {
   const client = getClient();
   return await client.query(anyApi.creatives.getCreativeForEnhancement, withServerSecret({ userId, creativeId }));

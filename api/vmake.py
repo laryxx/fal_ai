@@ -88,7 +88,7 @@ def _summarize(res):
 
     if status in FINISHED_STATUSES:
         message = result.get("msg") or res.get("message") or f"status {status}"
-        return {"status": "failed", "taskId": task_id, "error": f"Vmake could not enhance the image ({message})"}
+        return {"status": "failed", "taskId": task_id, "error": f"Vmake could not finish the job ({message})"}
 
     return {"status": "processing", "taskId": task_id}
 
@@ -150,14 +150,16 @@ def handle(payload):
 
         return 400, {"status": "failed", "error": "Unknown action"}
     except ConsumeDeniedError as e:
-        # Out of credits, daily API limit reached, or plan lacks API access.
-        return 200, {"status": "failed", "error": f"Vmake refused the job (credits or daily limit): {e.msg}"}
+        # Vmake checks the file and the account before charging: out of credits,
+        # daily API limit, plan without API access, file too large, etc.
+        # Pass its reason on as-is; the app rewords the ones it knows.
+        return 200, {"status": "failed", "error": f"Vmake refused the job: {e.msg}"}
     except ConfigFetchError as e:
         return 502, {"status": "failed", "error": f"Could not reach Vmake: {e.msg}"}
     except WapiApiError as e:
         return 502, {"status": "failed", "error": f"Vmake error: {e.msg}"}
     except Exception as e:  # network errors, upload failures, unexpected shapes
-        return 502, {"status": "failed", "error": f"Vmake request failed ({type(e).__name__})"}
+        return 502, {"status": "failed", "error": f"Unexpected error while talking to Vmake ({type(e).__name__}). Please try again."}
 
 
 class handler(BaseHTTPRequestHandler):

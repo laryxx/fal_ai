@@ -246,11 +246,15 @@ export const getCreativeForEnhancement = query({
     if (!user || !creative || (creative.userId !== args.userId && user.role !== "admin")) {
       return null;
     }
+    const asset = creative.outputAssetId ? await ctx.db.get(creative.outputAssetId) : null;
     return {
       kind: creative.kind,
       status: creative.status,
       provider: creative.provider ?? "fal",
       durationSeconds: creative.durationSeconds ?? null,
+      // Only known for files whose size we recorded (Vmake results, uploads).
+      width: asset?.width ?? null,
+      height: asset?.height ?? null,
     };
   },
 });

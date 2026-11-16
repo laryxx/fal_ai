@@ -8,6 +8,7 @@ import {
   convexSetProviderTaskId,
 } from "@/lib/convex";
 import { uploadStreamToR2, uploadToR2 } from "@/lib/r2";
+import { VMAKE_MAX_DIMENSION } from "@/lib/vmake-options";
 
 /** How long an unfinished Vmake job may run before the sync route gives up on it. */
 export function getVmakeStaleAfterMs(kind: "image" | "video", hasTaskId: boolean) {
@@ -16,6 +17,20 @@ export function getVmakeStaleAfterMs(kind: "image" | "video", hasTaskId: boolean
   if (!hasTaskId) return 10 * 60 * 1000;
   // 4K/8K video restoration can take a long time on Vmake's side.
   return kind === "video" ? 3 * 60 * 60 * 1000 : 30 * 60 * 1000;
+}
+
+/**
+ * Reword Vmake's failure reasons for people. Vmake's own texts can be off
+ * (it says "video" for images), so known cases get our wording.
+ */
+export function friendlyVmakeError(message: string, kind: "image" | "video") {
+  if (/resolution limit|4096/i.test(message)) {
+    return `This ${kind} is too large for Vmake (maximum ${VMAKE_MAX_DIMENSION} × ${VMAKE_MAX_DIMENSION} pixels). Enhanced files are usually bigger than that, so remove watermarks before enhancing. No credits were used.`;
+  }
+  if (/credit|quota|balance|insufficient|limit reached|daily/i.test(message)) {
+    return `Vmake refused the job: not enough Vmake credits, or the daily API credit limit was reached. Check the Vmake dashboard. (${message})`;
+  }
+  return message;
 }
 
 export function isVmakeConfigured() {
@@ -90,7 +105,7 @@ export async function applyVmakeResult(
   }
 
   if (result.status === "failed") {
-    await convexMarkCreativeFailed(creative._id, result.error);
+    await convexMarkCreativeFailed(creative._id, friendlyVmakeError(result.error, creative.kind));
     return;
   }
 
@@ -102,7 +117,7 @@ export async function applyVmakeResult(
   // Vmake's result link expires after 7 days, so keep our own copy in R2.
   const source = await fetch(result.outputUrl, { cache: "no-store" });
   if (!source.ok || !source.body) {
-    await convexMarkCreativeFailed(creative._id, `Could not download the enhanced ${creative.kind} from Vmake`);
+    await convexMarkCreativeFailed(creative._id, `Vmake finished, but the result could not be downloaded from Vmake`);
     return;
   }
 

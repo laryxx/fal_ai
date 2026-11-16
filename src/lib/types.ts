@@ -37,6 +37,8 @@ export type CreativeSummary = {
     publicUrl: string;
     contentType?: string;
     durationSeconds?: number;
+    width?: number;
+    height?: number;
   } | null;
 };
 

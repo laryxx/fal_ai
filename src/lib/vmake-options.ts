@@ -110,6 +110,13 @@ export function getVideoRemoveQuote(mode: RemoveMode, durationSeconds: number) {
 
 export type VmakeOperation = "enhance" | "remove";
 
+/** Vmake rejects images and videos larger than this on either side (seen 2026-11-16). */
+export const VMAKE_MAX_DIMENSION = 4096;
+
+export function exceedsVmakeLimit(width?: number | null, height?: number | null) {
+  return Boolean((width && width > VMAKE_MAX_DIMENSION) || (height && height > VMAKE_MAX_DIMENSION));
+}
+
 export const vmakeLabels = {
   image: {
     enhance: { modelFamily: "vmake-enhance", modelLabel: "Vmake Enhance" },
